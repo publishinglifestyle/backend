@@ -66,24 +66,49 @@ async function login(email, password) {
 }
 
 async function getUserById(user_id) {
-    const { data, error } = await supabase
-        .from('Users')
-        .select("id, first_name, last_name, email, role")
-        .eq('id', user_id)
-        .single();
+    try {
+        // Fetch user data
+        const { data: userData, error: userError } = await supabase
+            .from('Users')
+            .select("id, first_name, last_name, email, role, price_id")
+            .eq('id', user_id)
+            .single();
 
-    // Handle errors from the Supabase query
-    if (error) {
-        console.error('Error fetching user:', error);
-        return { error };
+        // Handle errors from the Supabase query for Users
+        if (userError) {
+            console.error('Error fetching user:', userError.message);
+            return { error: userError.message };
+        }
+
+        // Handle case where no user is found
+        if (!userData) {
+            return { code: 404, response: 'User not found.' };
+        }
+
+        // Fetch subscription data based on user's price_id
+        const { data: subscriptionData, error: subscriptionError } = await supabase
+            .from('Subscriptions')
+            .select('level')
+            .eq('price_id', userData.price_id)
+            .single();
+
+        // Handle errors from the Supabase query for Subscriptions
+        if (subscriptionError) {
+            console.error('Error fetching subscription:', subscriptionError.message);
+            return { error: subscriptionError.message };
+        }
+
+        // Include subscription level in user data if subscriptionData exists
+        const userWithSubscription = {
+            ...userData,
+            subscription_level: subscriptionData ? subscriptionData.level : null
+        };
+
+        return { data: userWithSubscription, error: null };
+    } catch (error) {
+        console.error('Error in getUserById:', error.message);
+        return { error: error.message };
     }
-
-    // Handle case where no user is found
-    if (!data) {
-        return { code: 404, response: 'User not found.' };
-    }
-
-    return { data, error };
 }
 
 async function getUserByEmail(email) {

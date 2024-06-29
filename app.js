@@ -27,7 +27,8 @@ const { calculate_tokens } = require('./utils/tokenizer');
 const subscriptions = require('./database/subscriptions')
 const user_subscriptions = require('./database/user_subscriptions')
 const stripe_subscriptions = require('./utils/stripe_subscriptions')
-
+const { createAgent, updateAgent, getAgentById, getAgentsPerLevel, getAllAgents, deleteAgent } = require('./database/agents');
+const { createConversation, updateConversation, getConversationsByUserId, getConversation, deleteConversation } = require('./database/conversations');
 const OpenAI = require('openai');
 const openai = new OpenAI({ apiKey: process.env.OPEN_AI_KEY });
 
@@ -59,11 +60,11 @@ const onlineUsers = new Map();
 io.on('connection', (socket) => {
     console.log("New connection: ", socket.id);
 
-    socket.on('sendMessage', async ({ senderId, message }) => {
+    socket.on('sendMessage', async ({ senderId, message, agent_id }) => {
         const newMessageId = `msg-${Date.now()}`;
         try {
             ongoingMessageIds.set(senderId, newMessageId);
-            await reply(senderId, message, socket);
+            await reply(senderId, message, agent_id, socket);
         } catch (error) {
             console.error('Error handling sendMessage:', error);
 
@@ -83,7 +84,7 @@ server.listen(PORT, () => {
 
 const ongoingMessageIds = new Map();
 
-async function reply(user_id, msg, socket) {
+async function reply(user_id, msg, agent_id, socket) {
     const { data: subscription, error: subscription_error } = await user_subscriptions.getSubscription(user_id)
     if (!subscription || !subscription.is_active) {
         io.to(socket.id).emit('message', {
@@ -116,13 +117,29 @@ async function reply(user_id, msg, socket) {
     if (!context) {
         // Set a new unique message ID
         ongoingMessageIds.set(user_id, `msg-${Date.now()}`);
-        context = new ConversationContext("You are a helpful assistant");
+
+        let starting_prompt = "You are a helpful assistant"
+        if (agent_id) {
+            const { data: agent, error: agent_error } = await getAgentById(agent_id)
+            starting_prompt = agent.prompt
+        }
+
+        context = new ConversationContext(starting_prompt);
         conversationContexts.set(user_id, context);
+
+        await createConversation('Default', context, user_id)
+
+    } else {
+        await updateConversation(context.id, 'Default', context, user_id)
     }
 
     await context.updateContextWithUserMessage(msg);
 
-    await context.updateContextWithSystemMessage(msg);
+    if (agent_id) {
+        const { data: agent, error: agent_error } = await getAgentById(agent_id)
+        await context.updateContextWithSystemMessage(agent.prompt);
+    }
+
     const chatMessages = await context.getChatMessages();
 
     // Fetch the ongoing message ID
@@ -451,6 +468,107 @@ app.get('/get_stripe_portal', authenticateJWT, async (req, res) => {
     const url = await stripe_subscriptions.createPortal(subscription.customer_id)
 
     res.json({ response: url })
+})
+
+/********************* Agents ***********/
+app.post('/create_agent', authenticateJWT, onlyOwner, async (req, res) => {
+    const { name, temperature, type, level, prompt } = req.body;
+
+    console.log(req.body)
+    if (!name || !type || !level || !prompt) {
+        return res.status(400).json({ response: 'Params missing.' });
+    }
+
+    const { data, error } = await createAgent(name, temperature, type, level, prompt)
+    return res.status(200).json({ response: data });
+});
+
+app.post('/update_agent', authenticateJWT, onlyOwner, async (req, res) => {
+    const { agent_id, name, temperature, type, level, prompt } = req.body;
+
+    if (!agent_id || !name || !type || !level || !prompt) {
+        return res.status(400).json({ response: 'Params missing.' });
+    }
+
+    const { data, error } = await updateAgent(agent_id, name, temperature, type, level, prompt)
+    return res.status(200).json({ response: data });
+});
+
+app.post('/get_agent', async (req, res) => {
+    const { agent_id } = req.body;
+
+    if (!agent_id) {
+        return res.status(400).json({ response: 'Params missing.' });
+    }
+
+    const { data, error } = await getAgentById(agent_id)
+    return res.status(200).json({ response: data });
+})
+
+app.get('/get_agents_per_level', async (req, res) => {
+    const { level } = req.query;
+
+    if (!level) {
+        return res.status(400).json({ response: 'Params missing.' });
+    }
+
+    const { data, error } = await getAgentsPerLevel(level)
+    return res.status(200).json({ response: data });
+})
+
+app.get('/get_all_agents', async (req, res) => {
+    const { data, error } = await getAllAgents()
+    return res.status(200).json({ response: data });
+})
+
+app.post('/delete_agent', authenticateJWT, onlyOwner, async (req, res) => {
+    const { agent_id } = req.body;
+
+    if (!agent_id) {
+        return res.status(400).json({ response: 'Params missing.' });
+    }
+
+    const { data, error } = await deleteAgent(agent_id)
+    return res.status(200).json({ response: data });
+})
+
+/********************* Conversations ***********/
+app.post('/create_conversation', authenticateJWT, async (req, res) => {
+    const { name, context } = req.body;
+
+    if (!name || !context) {
+        return res.status(400).json({ response: 'Params missing.' });
+    }
+
+    const { data, error } = await createConversation(name, context, req.userId)
+    return res.status(200).json({ response: data });
+})
+
+app.get('/get_conversations', authenticateJWT, async (req, res) => {
+    const { data, error } = await getConversationsByUserId(req.userId)
+    return res.status(200).json({ response: data });
+})
+
+app.get('/get_conversation', authenticateJWT, async (req, res) => {
+    const { conversation_id } = req.query;
+
+    if (!conversation_id) {
+        return res.status(400).json({ response: 'Params missing.' });
+    }
+
+    const { data, error } = await getConversation(conversation_id)
+    return res.status(200).json({ response: data });
+})
+
+app.post('/delete_conversation', authenticateJWT, async (req, res) => {
+    const { conversation_id } = req.body;
+
+    if (!conversation_id) {
+        return res.status(400).json({ response: 'Params missing.' });
+    }
+
+    const { data, error } = await deleteConversation(conversation_id)
+    return res.status(200).json({ response: data });
 })
 
 /* Utils */
