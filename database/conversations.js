@@ -10,6 +10,7 @@ async function createConversation(name, context, user_id) {
             { name, context, user_id },
         ])
         .select()
+        .single()
 
     return { data, error }
 }
@@ -79,10 +80,28 @@ async function deleteConversation(conversation_id) {
     return { data, error };
 }
 
+async function updateSystemContext(conversation_id, newContext) {
+    try {
+        const { data, error: updateError } = await supabase
+            .from('Conversations')
+            .update({ context: newContext })
+            .select()
+            .match({ id: conversation_id });
+        if (updateError) {
+            throw updateError;
+        }
+        return { data, error: null };
+    } catch (error) {
+        console.error('Error updating system context:', error);
+        return { error };
+    }
+}
+
 module.exports = {
     createConversation,
     getConversationsByUserId,
     deleteConversation,
     getConversation,
-    updateConversation
+    updateConversation,
+    updateSystemContext
 }

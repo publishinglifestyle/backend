@@ -12,7 +12,6 @@ const socketIo = require('socket.io');
 const jwt = require('jsonwebtoken');
 const bodyParser = require('body-parser');
 const cors = require('cors');
-const ConversationContext = require('./ConversationContext');
 const {
     createUser,
     login,
@@ -28,12 +27,9 @@ const subscriptions = require('./database/subscriptions')
 const user_subscriptions = require('./database/user_subscriptions')
 const stripe_subscriptions = require('./utils/stripe_subscriptions')
 const { createAgent, updateAgent, getAgentById, getAgentsPerLevel, getAllAgents, deleteAgent } = require('./database/agents');
-const { createConversation, updateConversation, getConversationsByUserId, getConversation, deleteConversation } = require('./database/conversations');
+const { createConversation, updateConversation, getConversationsByUserId, getConversation, deleteConversation, updateSystemContext } = require('./database/conversations');
 const OpenAI = require('openai');
 const openai = new OpenAI({ apiKey: process.env.OPEN_AI_KEY });
-
-// Map to hold conversation contexts keyed by userId
-const conversationContexts = new Map();
 
 const app = express();
 app.use((req, res, next) => {
@@ -56,15 +52,16 @@ const io = socketIo(server, {
 });
 
 const onlineUsers = new Map();
+const starting_prompt = "You are a helpful assistant"
 
 io.on('connection', (socket) => {
     console.log("New connection: ", socket.id);
 
-    socket.on('sendMessage', async ({ senderId, message, agent_id }) => {
+    socket.on('sendMessage', async ({ senderId, message, agent_id, conversation_id }) => {
         const newMessageId = `msg-${Date.now()}`;
         try {
             ongoingMessageIds.set(senderId, newMessageId);
-            await reply(senderId, message, agent_id, socket);
+            await reply(senderId, message, agent_id, conversation_id, socket);
         } catch (error) {
             console.error('Error handling sendMessage:', error);
 
@@ -84,7 +81,21 @@ server.listen(PORT, () => {
 
 const ongoingMessageIds = new Map();
 
-async function reply(user_id, msg, agent_id, socket) {
+async function generateConversationTitle(user_message) {
+    const context = [
+        { role: 'system', content: "You are a title generator. Your job is to generate a short title that capture the essence of the user message. Your title must be long no more than 5 words." },
+        { role: 'user', content: "User message: " + user_message }
+    ]
+    const response = await openai.chat.completions.create({
+        messages: context,
+        model: 'gpt-4o',
+        temperature: 0,
+    });
+
+    return response.choices[0].message.content
+}
+
+async function reply(user_id, msg, agent_id, conversation_id, socket) {
     const { data: subscription, error: subscription_error } = await user_subscriptions.getSubscription(user_id)
     if (!subscription || !subscription.is_active) {
         io.to(socket.id).emit('message', {
@@ -111,43 +122,53 @@ async function reply(user_id, msg, agent_id, socket) {
     let total_tokens = 0;
     const user_tokens = calculate_tokens(msg);
     console.log("user_tokens", user_tokens)
-    let context = conversationContexts.get(user_id);
-    console.log("context", context)
 
-    if (!context) {
-        // Set a new unique message ID
-        ongoingMessageIds.set(user_id, `msg-${Date.now()}`);
+    let context
+    let conversation
+    let conversation_name = ""
+    let ai_message = ""
+    let temperature = 0.5
+    console.log("conversation_id", conversation_id)
 
-        let starting_prompt = "You are a helpful assistant"
+    if (conversation_id) {
+        const { data: conversation_data, error: conversation_error } = await getConversation(conversation_id)
+        conversation = conversation_data
+        context = conversation.context
+
         if (agent_id) {
             const { data: agent, error: agent_error } = await getAgentById(agent_id)
-            starting_prompt = agent.prompt
+            for (let i = 0; i < context.length; i++) {
+                if (context[i].role == 'system') {
+                    context[i].content = agent.prompt
+                }
+            }
+            await updateSystemContext(conversation_id, context)
+        } else {
+            for (let i = 0; i < context.length; i++) {
+                if (context[i].role == 'system') {
+                    context[i].content = starting_prompt
+                }
+            }
+            await updateSystemContext(conversation_id, context)
         }
 
-        context = new ConversationContext(starting_prompt);
-        conversationContexts.set(user_id, context);
+        context.push({ role: 'user', content: msg });
 
-        await createConversation('Default', context, user_id)
-
-    } else {
-        await updateConversation(context.id, 'Default', context, user_id)
+        if (context.length == 2) {
+            conversation_name = await generateConversationTitle(msg)
+        } else {
+            conversation_name = conversation.name
+        }
     }
-
-    await context.updateContextWithUserMessage(msg);
-
-    if (agent_id) {
-        const { data: agent, error: agent_error } = await getAgentById(agent_id)
-        await context.updateContextWithSystemMessage(agent.prompt);
-    }
-
-    const chatMessages = await context.getChatMessages();
 
     // Fetch the ongoing message ID
     const messageId = ongoingMessageIds.get(user_id);
 
+    console.log("context", context)
     if (msg.startsWith('/image')) {
         console.log('Image');
         const image_to_generate = msg.split(' ')[1];
+
         const response = await openai.images.generate({
             model: "dall-e-3",
             prompt: image_to_generate,
@@ -159,46 +180,47 @@ async function reply(user_id, msg, agent_id, socket) {
             id: messageId,
             senderId: user_id,
             text: response.data[0].url,
-            complete: true,
-            type: 'image'
+            conversation_id: conversation_id,
+            type: 'image',
+            title: conversation_name
         });
+
+        context.push({ role: 'system', content: response.data[0].url });
+        await updateConversation(conversation_id, conversation_name, context, user_id)
 
     } else {
         const response = await openai.chat.completions.create({
-            messages: chatMessages,
+            messages: context,
             model: 'gpt-4o',
-            temperature: 0.5,
+            temperature: temperature,
             stream: true
         });
 
         let ai_tokens = 0
         for await (const chunk of response) {
             if (chunk.choices[0].delta.content) {
-                const isComplete = chunk.choices[0].delta.finish_reason !== undefined;
-
                 io.to(socket.id).emit('message', {
                     id: messageId,
                     senderId: user_id,
                     text: chunk.choices[0].delta.content,
-                    complete: isComplete,
-                    type: 'chat'
+                    conversation_id: conversation_id,
+                    type: 'chat',
+                    title: conversation_name
                 });
 
                 ai_tokens += calculate_tokens(chunk.choices[0].delta.content);
-
-                // If the message is complete, clear the ID from the map
-                if (isComplete) {
-                    ongoingMessageIds.delete(user_id);
-                }
+                ai_message += chunk.choices[0].delta.content
             }
         }
-
-        // MIO MESSAGGIO: Hello how are you?
-        // AI: Hello! I'm just a computer program, so I don't have feelings, but I'm here and ready to help you. How can I assist you today?
 
         console.log("ai_tokens", ai_tokens)
         total_tokens = user_tokens + ai_tokens
         await user_subscriptions.updateCredits(user_id, subscription.credits - total_tokens)
+
+        // If the message is complete, clear the ID from the map
+        context.push({ role: 'system', content: ai_message });
+        await updateConversation(conversation_id, conversation_name, context, user_id)
+        ongoingMessageIds.delete(user_id);
     }
 }
 
@@ -380,15 +402,9 @@ app.get('/get_subscriptions', async (req, res) => {
     return res.status(200).json({ response: data });
 });
 
-app.post('/is_subscription_active', async (req, res) => {
-    const { user_id } = req.body;
-
-    if (!user_id) {
-        return res.status(400).json({ response: 'Params missing.' });
-    }
-
-    const { data: subscription, error: subscription_error } = await user_subscriptions.getSubscription(user_id)
-    return res.status(200).json({ response: subscription?.is_active });
+app.get('/get_subscription', authenticateJWT, async (req, res) => {
+    const { data, error } = await user_subscriptions.getSubscription(req.userId)
+    return res.status(200).json({ response: data });
 });
 
 app.post('/stripe/webhook', async (req, res) => {
@@ -533,14 +549,15 @@ app.post('/delete_agent', authenticateJWT, onlyOwner, async (req, res) => {
 })
 
 /********************* Conversations ***********/
-app.post('/create_conversation', authenticateJWT, async (req, res) => {
-    const { name, context } = req.body;
+app.get('/create_conversation', authenticateJWT, async (req, res) => {
+    // Set a new unique message ID
+    ongoingMessageIds.set(req.userId, `msg-${Date.now()}`);
 
-    if (!name || !context) {
-        return res.status(400).json({ response: 'Params missing.' });
-    }
+    const context = [
+        { role: 'system', content: starting_prompt },
+    ]
 
-    const { data, error } = await createConversation(name, context, req.userId)
+    const { data, error } = await createConversation('Default', context, req.userId)
     return res.status(200).json({ response: data });
 })
 
