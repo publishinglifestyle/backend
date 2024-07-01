@@ -20,7 +20,9 @@ const {
     updateUser,
     uploadProfilePic,
     downloadProfilePic,
-    resetPassword
+    resetPassword,
+    initiatePasswordReset,
+    resetUserPassword
 } = require('./database/users');
 const { calculate_tokens } = require('./utils/tokenizer');
 const subscriptions = require('./database/subscriptions')
@@ -28,6 +30,7 @@ const user_subscriptions = require('./database/user_subscriptions')
 const stripe_subscriptions = require('./utils/stripe_subscriptions')
 const { createAgent, updateAgent, getAgentById, getAgentsPerLevel, getAllAgents, deleteAgent } = require('./database/agents');
 const { createConversation, updateConversation, getConversationsByUserId, getConversation, deleteConversation, updateSystemContext } = require('./database/conversations');
+const { sendResetPasswordEmail } = require('./utils/sendgrid')
 const OpenAI = require('openai');
 const openai = new OpenAI({ apiKey: process.env.OPEN_AI_KEY });
 
@@ -327,6 +330,47 @@ app.post('/change_password', authenticateJWT, async (req, res) => {
     return res.status(200).json({ response: true });
 });
 
+app.post('/initiate_password_reset', async (req, res) => {
+    const email = req.body.email
+
+    const { data: user, error: user_error } = await getUserByEmail(email)
+    if (!user) {
+        return res.status(400).json({ 'message': 'User not found' })
+    }
+
+    const token = await initiatePasswordReset(email)
+    console.log("Reset token", token)
+    //await sendgrid.sendResetPasswordEmail(user.response.email, "Reset password", token.response)
+    //res.json({ response: token });
+
+    await sendResetPasswordEmail(email, token)
+    res.json({ response: true });
+});
+
+app.post('/reset_password', async (req, res) => {
+    const { token, password_1, password_2 } = req.body
+
+    // Check for missing parameters
+    if (!token || !password_1 || !password_2) {
+        return res.status(400).json({ response: "Missing parameters" });
+    }
+
+    // Check if the new passwords match
+    if (password_1 !== password_2) {
+        return res.status(400).json({ response: "New passwords do not match" });
+    }
+
+    // Password validation
+    const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/;
+    if (!passwordRegex.test(password_1)) {
+        return res.status(400).send({ 'message': 'Password does not meet the required criteria.' });
+    }
+
+    const result = await resetUserPassword(token, password_1)
+
+    res.json({ response: result });
+});
+
 app.post('/upload_profile_pic', authenticateJWT, async (req, res) => {
     const { base64String } = req.body;
     if (!base64String) {
@@ -365,24 +409,24 @@ app.get('/get_profile_pic', authenticateJWT, async (req, res) => {
 
 /********************* Subscriptions ***********/
 app.post('/create_subscription', authenticateJWT, onlyOwner, async (req, res) => {
-    const { name, description, level, price_id, price, credits } = req.body;
+    const { name, description, level, price_id, price, credits, type } = req.body;
 
-    if (!name || !description || !level || !price_id || !price || !credits) {
+    if (!name || !description || !level || !price_id || !price || !credits || !type) {
         return res.status(400).json({ response: 'Params missing.' });
     }
 
-    const { data, error } = await subscriptions.createSubscription(name, description, level, price_id, price, credits)
+    const { data, error } = await subscriptions.createSubscription(name, description, level, price_id, price, credits, type)
     return res.status(200).json({ response: data });
 });
 
 app.post('/update_subscription', authenticateJWT, onlyOwner, async (req, res) => {
-    const { subscription_id, name, description, level, price_id, price, credits } = req.body;
+    const { subscription_id, name, description, level, price_id, price, credits, type } = req.body;
 
-    if (!subscription_id || !name || !description || !level || !price_id || !price || !credits) {
+    if (!subscription_id || !name || !description || !level || !price_id || !price || !credits || !type) {
         return res.status(400).json({ response: 'Params missing.' });
     }
 
-    const { data, error } = await subscriptions.updateSubscription(subscription_id, name, description, level, price_id, price, credits)
+    const { data, error } = await subscriptions.updateSubscription(subscription_id, name, description, level, price_id, price, credits, type)
     return res.status(200).json({ response: data });
 });
 

@@ -1,6 +1,6 @@
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-
+const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_API_KEY);
 const { decode } = require('base64-arraybuffer')
@@ -66,6 +66,7 @@ async function login(email, password) {
 }
 
 async function getUserById(user_id) {
+    console.log("user_id", user_id)
     try {
         // Fetch user data
         const { data: userData, error: userError } = await supabase
@@ -91,12 +92,6 @@ async function getUserById(user_id) {
             .select('level')
             .eq('price_id', userData.price_id)
             .single();
-
-        // Handle errors from the Supabase query for Subscriptions
-        if (subscriptionError) {
-            console.error('Error fetching subscription:', subscriptionError.message);
-            return { error: subscriptionError.message };
-        }
 
         // Include subscription level in user data if subscriptionData exists
         const userWithSubscription = {
@@ -207,6 +202,58 @@ async function resetPassword(user_id, newPassword) {
     }
 }
 
+async function initiatePasswordReset(email) {
+    // Generate a reset token
+    const reset_token = crypto.randomBytes(20).toString('hex');
+    const reset_token_expiry = new Date(Date.now() + 3600000); // Token expires in 1 hour
+
+    const { data, error } = await supabase
+        .from('Users')
+        .update({ reset_token, reset_token_expiry })
+        .select()
+        .match({ email: email });
+
+    return reset_token
+}
+
+const resetUserPassword = async (token, newPassword) => {
+    try {
+        // Verify the reset token and its expiry
+        const { data, error } = await supabase
+            .from('Users')
+            .select()
+            .eq('reset_token', token)
+            .gt('reset_token_expiry', new Date().toISOString())
+            .single();
+
+        if (error) {
+            console.error('Error fetching user:', error);
+            return { error };
+        }
+
+        // Hash the new password
+        const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+        // Update the user's password and clear the reset token fields
+        const { data: update_user_password, error: update_user_password_error } = await supabase
+            .from('Users')
+            .update({ password: hashedPassword, reset_token: null, reset_token_expiry: null })
+            .eq('id', data.id)
+            .single();
+
+        if (update_user_password_error) {
+            console.error('Error updating user password:', update_user_password_error);
+            return { error: update_user_password_error };
+        }
+
+        return { data: update_user_password, error: null };
+    } catch (error) {
+        console.error('Error:', error.message);
+        return { error: error.message };
+    }
+}
+
+
 module.exports = {
     createUser,
     login,
@@ -215,5 +262,7 @@ module.exports = {
     updateUser,
     uploadProfilePic,
     downloadProfilePic,
-    resetPassword
+    resetPassword,
+    initiatePasswordReset,
+    resetUserPassword
 };

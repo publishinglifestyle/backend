@@ -3,18 +3,18 @@ require('dotenv').config();
 const { createClient } = require('@supabase/supabase-js');
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_API_KEY);
 
-async function createSubscription(name, description, level, price_id, price, credits) {
+async function createSubscription(name, description, level, price_id, price, credits, type) {
     const { data, error } = await supabase
         .from('Subscriptions')
         .insert([
-            { name, description, level, price_id, price, credits },
+            { name, description, level, price_id, price, credits, type },
         ])
         .select()
 
     return { data, error }
 }
 
-async function updateSubscription(subscription_id, name, description, level, price_id, price, credits) {
+async function updateSubscription(subscription_id, name, description, level, price_id, price, credits, type) {
     try {
         const { data: existingData } = await supabase
             .from('Subscriptions')
@@ -25,7 +25,7 @@ async function updateSubscription(subscription_id, name, description, level, pri
         if (existingData) {
             const { data, error: updateError } = await supabase
                 .from('Subscriptions')
-                .update({ name, description, level, price_id, price, credits })
+                .update({ name, description, level, price_id, price, credits, type })
                 .select()
                 .match({ id: subscription_id })
 
