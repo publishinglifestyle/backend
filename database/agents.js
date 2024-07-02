@@ -39,7 +39,7 @@ async function getAgentsPerLevel(level) {
         const { data, error } = await supabase
             .from('Agents')
             .select()
-            .match({ level: level })
+            .lte('level', level)  
 
         if (error) {
             throw error;

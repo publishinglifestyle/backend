@@ -98,9 +98,31 @@ async function generateConversationTitle(user_message) {
     return response.choices[0].message.content
 }
 
+async function improvePrompt(user_message) {
+    const context = [
+        {
+            role: 'system',
+            content: "Act as an image description enhancer. Your job is to improve the description of the image."
+        },
+        {
+            role: 'user',
+            content: `Improve this description: "${user_message}".`
+        }
+    ];
+    const response = await openai.chat.completions.create({
+        messages: context,
+        model: 'gpt-4o',
+    });
+
+    return response.choices[0].message.content;
+}
+
+
+
 async function reply(user_id, msg, agent_id, conversation_id, socket) {
+    const { data: user, error: user_error } = await getUserById(user_id)
     const { data: subscription, error: subscription_error } = await user_subscriptions.getSubscription(user_id)
-    if (!subscription || !subscription.is_active) {
+    if ((!subscription || !subscription.is_active) && user.role != 'owner') {
         io.to(socket.id).emit('message', {
             id: ongoingMessageIds.get(user_id),
             senderId: user_id,
@@ -111,7 +133,7 @@ async function reply(user_id, msg, agent_id, conversation_id, socket) {
         return
     }
 
-    if (subscription.credits <= 0) {
+    if (subscription && subscription.credits <= 0 && user.role != 'owner') {
         io.to(socket.id).emit('message', {
             id: ongoingMessageIds.get(user_id),
             senderId: user_id,
@@ -131,7 +153,15 @@ async function reply(user_id, msg, agent_id, conversation_id, socket) {
     let conversation_name = ""
     let ai_message = ""
     let temperature = 0.5
+    let agent_prompt = ""
+    let agent_type = ""
     console.log("conversation_id", conversation_id)
+
+    if (agent_id) {
+        const { data: agent, error: agent_error } = await getAgentById(agent_id)
+        agent_prompt = agent.prompt
+        agent_type = agent.type
+    }
 
     if (conversation_id) {
         const { data: conversation_data, error: conversation_error } = await getConversation(conversation_id)
@@ -139,10 +169,9 @@ async function reply(user_id, msg, agent_id, conversation_id, socket) {
         context = conversation.context
 
         if (agent_id) {
-            const { data: agent, error: agent_error } = await getAgentById(agent_id)
             for (let i = 0; i < context.length; i++) {
                 if (context[i].role == 'system') {
-                    context[i].content = agent.prompt
+                    context[i].content = agent_prompt
                 }
             }
             await updateSystemContext(conversation_id, context)
@@ -168,9 +197,11 @@ async function reply(user_id, msg, agent_id, conversation_id, socket) {
     const messageId = ongoingMessageIds.get(user_id);
 
     console.log("context", context)
-    if (msg.startsWith('/image')) {
+    if (agent_type == 'image') {
         console.log('Image');
-        const image_to_generate = msg.split(' ')[1];
+        const new_prompt = await improvePrompt(msg)
+        const image_to_generate = new_prompt + "\n" + agent_prompt;
+        console.log("image_to_generate", image_to_generate)
 
         const response = await openai.images.generate({
             model: "dall-e-3",
@@ -218,7 +249,10 @@ async function reply(user_id, msg, agent_id, conversation_id, socket) {
 
         console.log("ai_tokens", ai_tokens)
         total_tokens = user_tokens + ai_tokens
-        await user_subscriptions.updateCredits(user_id, subscription.credits - total_tokens)
+
+        if (user.role != 'owner') {
+            await user_subscriptions.updateCredits(user_id, subscription.credits - total_tokens)
+        }
 
         // If the message is complete, clear the ID from the map
         context.push({ role: 'system', content: ai_message });
@@ -340,8 +374,6 @@ app.post('/initiate_password_reset', async (req, res) => {
 
     const token = await initiatePasswordReset(email)
     console.log("Reset token", token)
-    //await sendgrid.sendResetPasswordEmail(user.response.email, "Reset password", token.response)
-    //res.json({ response: token });
 
     await sendResetPasswordEmail(email, token)
     res.json({ response: true });
@@ -493,7 +525,7 @@ app.post('/stripe/webhook', async (req, res) => {
             // The subscription becomes past_due. Notify your customer and send them to the
             // customer portal to update their payment information.
             console.log("Subscription not paid")
-            await user_subscriptions.updateSubscription(user.id, customer_id, false, null)
+            //await user_subscriptions.updateSubscription(user.id, customer_id, false, null)
 
             break;
         case 'customer.subscription.deleted':
@@ -554,7 +586,7 @@ app.post('/update_agent', authenticateJWT, onlyOwner, async (req, res) => {
     return res.status(200).json({ response: data });
 });
 
-app.post('/get_agent', async (req, res) => {
+app.post('/get_agent', authenticateJWT, async (req, res) => {
     const { agent_id } = req.body;
 
     if (!agent_id) {
@@ -565,13 +597,10 @@ app.post('/get_agent', async (req, res) => {
     return res.status(200).json({ response: data });
 })
 
-app.get('/get_agents_per_level', async (req, res) => {
-    const { level } = req.query;
+app.get('/get_agents_per_level', authenticateJWT, async (req, res) => {
+    const { data: user, error: user_error } = await getUserById(req.userId)
 
-    if (!level) {
-        return res.status(400).json({ response: 'Params missing.' });
-    }
-
+    const level = user.role == 'owner' ? 3 : user.subscription_level
     const { data, error } = await getAgentsPerLevel(level)
     return res.status(200).json({ response: data });
 })
