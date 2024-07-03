@@ -12,6 +12,7 @@ const socketIo = require('socket.io');
 const jwt = require('jsonwebtoken');
 const bodyParser = require('body-parser');
 const cors = require('cors');
+
 const {
     createUser,
     login,
@@ -102,16 +103,16 @@ async function improvePrompt(user_message) {
     const context = [
         {
             role: 'system',
-            content: "Act as an image description enhancer. Your job is to improve the description of the image."
+            content: "Act as an image description enhancer. Your job is to improve the description of the image. Example of your response: A Disney-style cartoon illustration of a mother otter and her baby otter.The mother otter has a loving, gentle expression with bright, friendly eyes and soft brown fur. The baby otter is smaller, with big, curious eyes and fluffy fur. They are floating together on their backs in a peaceful river surrounded by lush green plants and flowers. The scene is heartwarming and charming, capturing a tender moment between the mother and her child."
         },
         {
             role: 'user',
-            content: `Improve this description: "${user_message}".`
+            content: `Improve this image: "${user_message}".`
         }
     ];
     const response = await openai.chat.completions.create({
         messages: context,
-        model: 'gpt-4o',
+        model: 'gpt-4o'
     });
 
     return response.choices[0].message.content;
@@ -191,13 +192,13 @@ async function reply(user_id, msg, agent_id, conversation_id, socket) {
     console.log("context", context)
     if (agent_type == 'image') {
         console.log('Image');
-        const new_prompt = await improvePrompt(msg)
-        const image_to_generate = new_prompt + "\n" + agent_prompt;
+        const new_prompt = await improvePrompt(agent_prompt + " " + msg)
+        const image_to_generate = new_prompt;
         console.log("image_to_generate", image_to_generate)
 
         const response = await openai.images.generate({
             model: "dall-e-3",
-            prompt: image_to_generate,
+            prompt: "I NEED to test how the tool works with extremely simple prompts. DO NOT add any detail, just use it AS-IS:" + image_to_generate,
             n: 1,
             size: "1024x1024",
         });
@@ -217,8 +218,7 @@ async function reply(user_id, msg, agent_id, conversation_id, socket) {
     } else {
         const response = await openai.chat.completions.create({
             messages: context,
-            //model: 'gpt-4o',
-            model: 'gpt-3.5-turbo-0125',
+            model: 'gpt-4o',
             temperature: temperature,
             stream: true
         });
