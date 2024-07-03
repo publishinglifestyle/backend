@@ -217,7 +217,8 @@ async function reply(user_id, msg, agent_id, conversation_id, socket) {
     } else {
         const response = await openai.chat.completions.create({
             messages: context,
-            model: 'gpt-4o',
+            //model: 'gpt-4o',
+            model: 'gpt-3.5-turbo-0125',
             temperature: temperature,
             stream: true
         });
