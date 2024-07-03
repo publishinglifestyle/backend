@@ -169,18 +169,10 @@ async function reply(user_id, msg, agent_id, conversation_id, socket) {
         context = conversation.context
 
         if (agent_id) {
-            for (let i = 0; i < context.length; i++) {
-                if (context[i].role == 'system') {
-                    context[i].content = agent_prompt
-                }
-            }
+            context[0].content = agent_prompt
             await updateSystemContext(conversation_id, context)
         } else {
-            for (let i = 0; i < context.length; i++) {
-                if (context[i].role == 'system') {
-                    context[i].content = starting_prompt
-                }
-            }
+            context[0].content = starting_prompt
             await updateSystemContext(conversation_id, context)
         }
 
