@@ -17,6 +17,9 @@ const OpenAI = require('openai');
 const openai = new OpenAI({ apiKey: process.env.OPEN_AI_KEY });
 
 const app = express();
+const compression = require('compression');
+app.use(compression());
+
 app.use((req, res, next) => {
     res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
     res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
@@ -39,7 +42,7 @@ const io = socketIo(server, {
 const ongoingMessageIds = new Map();
 const starting_prompt = "You are a helpful assistant";
 
-io.on('connection', (socket) => {
+/*io.on('connection', (socket) => {
     console.log("New connection: ", socket.id);
 
     socket.on('sendMessage', async ({ senderId, message, agent_id, conversation_id }) => {
@@ -53,9 +56,30 @@ io.on('connection', (socket) => {
         }
     });
 
-    socket.on('stopMessage', async ({ senderId }) => {
-        ongoingMessageIds.delete(senderId);
-        console.log("Stopped");
+    socket.on('disconnect', () => {
+        console.log(`User disconnected: ${socket.id}`);
+        // Cleanup if needed
+        ongoingMessageIds.forEach((value, key) => {
+            if (value.includes(socket.id)) {
+                ongoingMessageIds.delete(key);
+            }
+        });
+    });
+});*/
+io.on('connection', (socket) => {
+    console.log("New connection: ", socket.id);
+
+    socket.join('some-room');
+
+    socket.on('sendMessage', async ({ senderId, message, agent_id, conversation_id }) => {
+        const newMessageId = `msg-${Date.now()}`;
+        try {
+            ongoingMessageIds.set(senderId, newMessageId);
+            await reply(senderId, message, agent_id, conversation_id, socket);
+        } catch (error) {
+            console.error('Error handling sendMessage:', error);
+            socket.emit('error', { message: 'Failed to process message.' });
+        }
     });
 
     socket.on('disconnect', () => {
@@ -66,8 +90,10 @@ io.on('connection', (socket) => {
                 ongoingMessageIds.delete(key);
             }
         });
+        socket.leave('some-room');
     });
 });
+
 
 const PORT = process.env.PORT || 8090;
 server.listen(PORT, () => {
@@ -194,7 +220,8 @@ async function reply(user_id, msg, agent_id, conversation_id, socket) {
             text: response.data[0].url,
             conversation_id: conversation_id,
             type: 'image',
-            title: conversation_name
+            title: conversation_name,
+            complete: true
         });
 
         context.push({ role: 'system', content: response.data[0].url });
@@ -211,7 +238,7 @@ async function reply(user_id, msg, agent_id, conversation_id, socket) {
 
         let ai_tokens = 0;
         for await (const chunk of response) {
-            if (chunk.choices[0] && chunk.choices[0].delta && chunk.choices[0].delta.content && ongoingMessageIds.get(user_id)) {
+            if (chunk.choices[0] && chunk.choices[0].delta && chunk.choices[0].delta.content) {
                 io.to(socket.id).emit('message', {
                     id: messageId,
                     senderId: user_id,
