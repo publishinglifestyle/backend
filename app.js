@@ -16,9 +16,11 @@ const { sendResetPasswordEmail } = require('./utils/sendgrid');
 const OpenAI = require('openai');
 const openai = new OpenAI({ apiKey: process.env.OPEN_AI_KEY });
 
+
 const app = express();
 const compression = require('compression');
 app.use(compression());
+
 
 app.use((req, res, next) => {
     res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
@@ -28,7 +30,7 @@ app.use((req, res, next) => {
 
 app.use(express.static('public'));
 app.use(cors());
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({ limit: '10mb' }));
 app.use(bodyParser.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -42,36 +44,12 @@ const io = socketIo(server, {
 const ongoingMessageIds = new Map();
 const starting_prompt = "You are a helpful assistant";
 
-/*io.on('connection', (socket) => {
-    console.log("New connection: ", socket.id);
-
-    socket.on('sendMessage', async ({ senderId, message, agent_id, conversation_id }) => {
-        const newMessageId = `msg-${Date.now()}`;
-        try {
-            ongoingMessageIds.set(senderId, newMessageId);
-            await reply(senderId, message, agent_id, conversation_id, socket);
-        } catch (error) {
-            console.error('Error handling sendMessage:', error);
-            socket.emit('error', { message: 'Failed to process message.' });
-        }
-    });
-
-    socket.on('disconnect', () => {
-        console.log(`User disconnected: ${socket.id}`);
-        // Cleanup if needed
-        ongoingMessageIds.forEach((value, key) => {
-            if (value.includes(socket.id)) {
-                ongoingMessageIds.delete(key);
-            }
-        });
-    });
-});*/
 io.on('connection', (socket) => {
     console.log("New connection: ", socket.id);
 
     socket.join('some-room');
 
-    socket.on('sendMessage', async ({ senderId, message, agent_id, conversation_id }) => {
+    const sendMessageHandler = async ({ senderId, message, agent_id, conversation_id }) => {
         const newMessageId = `msg-${Date.now()}`;
         try {
             ongoingMessageIds.set(senderId, newMessageId);
@@ -80,20 +58,21 @@ io.on('connection', (socket) => {
             console.error('Error handling sendMessage:', error);
             socket.emit('error', { message: 'Failed to process message.' });
         }
-    });
+    };
+
+    socket.on('sendMessage', sendMessageHandler);
 
     socket.on('disconnect', () => {
         console.log(`User disconnected: ${socket.id}`);
         // Cleanup if needed
-        ongoingMessageIds.forEach((value, key) => {
+        /*for (let [key, value] of ongoingMessageIds) {
             if (value.includes(socket.id)) {
                 ongoingMessageIds.delete(key);
             }
-        });
-        socket.leave('some-room');
+        }
+        socket.leave('some-room');*/
     });
 });
-
 
 const PORT = process.env.PORT || 8090;
 server.listen(PORT, () => {
@@ -168,7 +147,6 @@ async function reply(user_id, msg, agent_id, conversation_id, socket) {
     let ai_message = "";
     let temperature = 0.5;
     let agent_prompt = "";
-    let agent_type = "";
     console.log("conversation_id", conversation_id);
 
     if (agent_id) {
@@ -201,73 +179,44 @@ async function reply(user_id, msg, agent_id, conversation_id, socket) {
 
     const messageId = ongoingMessageIds.get(user_id);
 
-    if (agent_type === 'image') {
-        console.log('Image');
-        const new_prompt = await improvePrompt(agent_prompt + " " + msg);
-        const image_to_generate = new_prompt;
-        console.log("image_to_generate", image_to_generate);
+    const response = await openai.chat.completions.create({
+        messages: context,
+        model: 'gpt-4o',
+        temperature: temperature,
+        stream: true,
+        stream_options: { "include_usage": true }
+    });
 
-        const response = await openai.images.generate({
-            model: "dall-e-3",
-            prompt: "I NEED to test how the tool works with extremely simple prompts. DO NOT add any detail, just use it AS-IS:" + image_to_generate,
-            n: 1,
-            size: "1024x1024",
-        });
+    let ai_tokens = 0;
+    for await (const chunk of response) {
+        if (chunk.choices[0] && chunk.choices[0].delta && chunk.choices[0].delta.content) {
+            io.to(socket.id).emit('message', {
+                id: messageId,
+                senderId: user_id,
+                text: chunk.choices[0].delta.content,
+                conversation_id: conversation_id,
+                title: conversation_name
+            });
 
-        io.to(socket.id).emit('message', {
-            id: messageId,
-            senderId: user_id,
-            text: response.data[0].url,
-            conversation_id: conversation_id,
-            type: 'image',
-            title: conversation_name,
-            complete: true
-        });
-
-        context.push({ role: 'system', content: response.data[0].url });
-        await updateConversation(conversation_id, conversation_name, context, user_id);
-
-    } else {
-        const response = await openai.chat.completions.create({
-            messages: context,
-            model: 'gpt-4o',
-            temperature: temperature,
-            stream: true,
-            stream_options: { "include_usage": true }
-        });
-
-        let ai_tokens = 0;
-        for await (const chunk of response) {
-            if (chunk.choices[0] && chunk.choices[0].delta && chunk.choices[0].delta.content) {
-                io.to(socket.id).emit('message', {
-                    id: messageId,
-                    senderId: user_id,
-                    text: chunk.choices[0].delta.content,
-                    conversation_id: conversation_id,
-                    type: 'chat',
-                    title: conversation_name
-                });
-
-                ai_tokens += calculate_tokens(chunk.choices[0].delta.content);
-                ai_message += chunk.choices[0].delta.content;
-            } else {
-                io.to(socket.id).emit('message', {
-                    complete: true
-                });
-            }
+            ai_tokens += calculate_tokens(chunk.choices[0].delta.content);
+            ai_message += chunk.choices[0].delta.content;
+        } else {
+            io.to(socket.id).emit('message', {
+                complete: true
+            });
         }
-
-        console.log("ai_tokens", ai_tokens);
-        total_tokens = user_tokens + ai_tokens;
-
-        if (user.role != 'owner') {
-            await user_subscriptions.updateCredits(user_id, subscription.credits - total_tokens);
-        }
-
-        context.push({ role: 'system', content: ai_message });
-        await updateConversation(conversation_id, conversation_name, context, user_id);
-        ongoingMessageIds.delete(user_id);
     }
+
+    console.log("ai_tokens", ai_tokens);
+    total_tokens = user_tokens + ai_tokens;
+
+    if (user.role != 'owner') {
+        await user_subscriptions.updateCredits(user_id, subscription.credits - total_tokens);
+    }
+
+    context.push({ role: 'system', content: ai_message });
+    await updateConversation(conversation_id, conversation_name, context, user_id);
+    ongoingMessageIds.delete(user_id);
 }
 
 /********************* User Management ***********/
@@ -427,6 +376,44 @@ app.get('/get_profile_pic', authenticateJWT, async (req, res) => {
     res.setHeader('Content-Type', data.type);
     res.setHeader('Content-Length', buffer.length);
     res.send(buffer);
+});
+
+/********************* Image Generation ***********/
+app.post('/generate_image', authenticateJWT, async (req, res) => {
+    const { msg, agent_id, conversation_id } = req.body;
+    let conversation_name = "";
+
+    const { data: conversation_data, error: conversation_error } = await getConversation(conversation_id);
+    let context = conversation_data.context;
+
+    if (context.length === 2) {
+        conversation_name = await generateConversationTitle(msg);
+    } else {
+        conversation_name = conversation_data.name;
+    }
+
+    const { data: agent, error: agent_error } = await getAgentById(agent_id);
+    context[0].content = agent.prompt;
+
+    const new_prompt = await improvePrompt(agent.prompt + " " + msg);
+
+    const image_to_generate = new_prompt;
+    console.log("image_to_generate", image_to_generate);
+
+    const response = await openai.images.generate({
+        model: "dall-e-3",
+        prompt: "I NEED to test how the tool works with extremely simple prompts. DO NOT add any detail, just use it AS-IS:" + image_to_generate,
+        n: 1,
+        size: "1024x1024",
+    });
+
+    context.push({ role: 'user', content: msg });
+    context.push({ role: 'system', content: response.data[0].url });
+    await updateConversation(conversation_id, conversation_name, context, req.userId);
+
+    const messageId = ongoingMessageIds.get(req.userId);
+
+    return res.status(200).json({ response: response.data[0].url, conversation_name: conversation_name, messageId: messageId });
 });
 
 /********************* Subscriptions ***********/
