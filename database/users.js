@@ -3,7 +3,6 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_API_KEY);
-const { decode } = require('base64-arraybuffer')
 
 async function createUser(email, password, first_name, last_name) {
     // Hash the password
@@ -137,50 +136,7 @@ async function updateUser(user_id, first_name, last_name, email) {
     return { data, error };
 }
 
-async function uploadProfilePic(file_buffer, name) {
-    // Check if the logo already exists
-    const { data: existingData, error: existingError } = await supabase
-        .storage
-        .from('users')
-        .list('', {
-            search: name + '.png'
-        });
 
-    if (existingError) {
-        return { data: null, error: existingError };
-    }
-
-    // If the logo exists, remove it
-    if (existingData.length > 0) {
-        const { error: removeError } = await supabase
-            .storage
-            .from('users')
-            .remove([name + '.png']);
-
-        if (removeError) {
-            return { data: null, error: removeError };
-        }
-    }
-
-    // Upload the new logo
-    const { data, error } = await supabase
-        .storage
-        .from('users')
-        .upload(name + '.png', decode(file_buffer), {
-            contentType: 'image/png'
-        });
-
-    return { data, error };
-}
-
-async function downloadProfilePic(name) {
-    const { data, error } = await supabase
-        .storage
-        .from('users')
-        .download(name + '.png')
-
-    return { data, error };
-}
 
 async function resetPassword(user_id, newPassword) {
     try {
@@ -260,8 +216,6 @@ module.exports = {
     getUserById,
     getUserByEmail,
     updateUser,
-    uploadProfilePic,
-    downloadProfilePic,
     resetPassword,
     initiatePasswordReset,
     resetUserPassword

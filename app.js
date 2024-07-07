@@ -4,8 +4,11 @@ const http = require('http');
 const socketIo = require('socket.io');
 const jwt = require('jsonwebtoken');
 const bodyParser = require('body-parser');
+const axios = require('axios');
+const uuid = require('uuid');
 const cors = require('cors');
-const { createUser, login, getUserById, getUserByEmail, updateUser, uploadProfilePic, downloadProfilePic, resetPassword, initiatePasswordReset, resetUserPassword } = require('./database/users');
+const { createUser, login, getUserById, getUserByEmail, updateUser, resetPassword, initiatePasswordReset, resetUserPassword } = require('./database/users');
+const { upload, download } = require('./database/images');
 const { calculate_tokens } = require('./utils/tokenizer');
 const subscriptions = require('./database/subscriptions');
 const user_subscriptions = require('./database/user_subscriptions');
@@ -15,7 +18,6 @@ const { createConversation, updateConversation, getConversationsByUserId, getCon
 const { sendResetPasswordEmail } = require('./utils/sendgrid');
 const OpenAI = require('openai');
 const openai = new OpenAI({ apiKey: process.env.OPEN_AI_KEY });
-
 
 const app = express();
 const compression = require('compression');
@@ -35,10 +37,17 @@ app.use(bodyParser.json());
 app.use(express.urlencoded({ extended: true }));
 
 const server = http.createServer(app);
+const PORT = process.env.PORT || 8090;
+server.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+});
+
 const io = socketIo(server, {
     cors: {
         origin: '*',
-    }
+    },
+    pingInterval: 1000,
+    pingTimeout: 1000,
 });
 
 const ongoingMessageIds = new Map();
@@ -47,7 +56,7 @@ const starting_prompt = "You are a helpful assistant";
 io.on('connection', (socket) => {
     console.log("New connection: ", socket.id);
 
-    socket.join('some-room');
+    //socket.join('some-room');
 
     const sendMessageHandler = async ({ senderId, message, agent_id, conversation_id }) => {
         const newMessageId = `msg-${Date.now()}`;
@@ -65,19 +74,11 @@ io.on('connection', (socket) => {
     socket.on('disconnect', () => {
         console.log(`User disconnected: ${socket.id}`);
         // Cleanup if needed
-        /*for (let [key, value] of ongoingMessageIds) {
-            if (value.includes(socket.id)) {
-                ongoingMessageIds.delete(key);
-            }
-        }
-        socket.leave('some-room');*/
+        //socket.leave('some-room');
     });
 });
 
-const PORT = process.env.PORT || 8090;
-server.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-});
+
 
 async function generateConversationTitle(user_message) {
     const context = [
@@ -113,6 +114,10 @@ async function improvePrompt(user_message) {
 }
 
 async function reply(user_id, msg, agent_id, conversation_id, socket) {
+    if (!ongoingMessageIds.get(user_id)) {
+        return
+    }
+
     const { data: user, error: user_error } = await getUserById(user_id);
     const { data: subscription, error: subscription_error } = await user_subscriptions.getSubscription(user_id);
     if ((!subscription || !subscription.is_active) && user.role != 'owner') {
@@ -153,6 +158,7 @@ async function reply(user_id, msg, agent_id, conversation_id, socket) {
         const { data: agent, error: agent_error } = await getAgentById(agent_id);
         agent_prompt = agent.prompt;
         agent_type = agent.type;
+        temperature = agent.temperature;
     }
 
     if (conversation_id) {
@@ -350,7 +356,7 @@ app.post('/upload_profile_pic', authenticateJWT, async (req, res) => {
         return res.status(400).send('No file data provided.');
     }
 
-    const { data, error } = await uploadProfilePic(base64String, req.userId);
+    const { data, error } = await upload('users', base64String, req.userId);
     if (error) {
         return res.status(500).send(error);
     }
@@ -359,7 +365,7 @@ app.post('/upload_profile_pic', authenticateJWT, async (req, res) => {
 });
 
 app.get('/get_profile_pic', authenticateJWT, async (req, res) => {
-    const { data, error } = await downloadProfilePic(req.userId);
+    const { data, error } = await download('users', req.userId);
 
     if (error) {
         console.error(error);
@@ -407,13 +413,40 @@ app.post('/generate_image', authenticateJWT, async (req, res) => {
         size: "1024x1024",
     });
 
-    context.push({ role: 'user', content: msg });
-    context.push({ role: 'system', content: response.data[0].url });
-    await updateConversation(conversation_id, conversation_name, context, req.userId);
+    console.log(response.data)
 
-    const messageId = ongoingMessageIds.get(req.userId);
+    let imageUrl = response.data[0].url;
 
-    return res.status(200).json({ response: response.data[0].url, conversation_name: conversation_name, messageId: messageId });
+    // Download image and convert to Base64
+    try {
+        const imageResponse = await axios({
+            url: imageUrl,
+            responseType: 'arraybuffer'
+        });
+
+        const imageBuffer = Buffer.from(imageResponse.data, 'binary');
+        const base64String = imageBuffer.toString('base64');
+
+        // Upload the image
+        const messageId = ongoingMessageIds.get(req.userId);
+        const randomId = uuid.v4().substring(0, 8);
+        const { data, error } = await upload('images', base64String, randomId);
+        console.log(data)
+        if (error) {
+            return res.status(500).json({ error: 'Failed to upload the image' });
+        }
+
+        // Update context with the image URL
+        imageUrl = "https://urrfcikwbcocmanctoca.supabase.co/storage/v1/object/public/" + data.fullPath
+        context.push({ role: 'user', content: msg });
+        context.push({ role: 'system', content: imageUrl });
+        await updateConversation(conversation_id, conversation_name, context, req.userId);
+
+        return res.status(200).json({ response: imageUrl, conversation_name: conversation_name, messageId: messageId });
+    } catch (error) {
+        console.error('Error downloading or processing image:', error);
+        return res.status(500).json({ error: 'Failed to download or process the image' });
+    }
 });
 
 /********************* Subscriptions ***********/
@@ -626,6 +659,18 @@ app.post('/delete_conversation', authenticateJWT, async (req, res) => {
     const { data, error } = await deleteConversation(conversation_id);
     return res.status(200).json({ response: data });
 });
+
+app.post('/change_conversation_name', authenticateJWT, async (req, res) => {
+    const { conversation_id, name } = req.body;
+
+    if (!conversation_id || !name) {
+        return res.status(400).json({ response: 'Params missing.' });
+    }
+
+    const { data: conversation, error: conversation_error } = await getConversation(conversation_id);
+    const { data, error } = await updateConversation(conversation_id, name, conversation.content, req.userId);
+    return res.status(200).json({ response: data });
+})
 
 /* Utils */
 function authenticateJWT(req, res, next) {
