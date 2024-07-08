@@ -46,9 +46,10 @@ const io = socketIo(server, {
     cors: {
         origin: '*',
     },
-    pingInterval: 1000,
-    pingTimeout: 1000,
+    pingInterval: 25000, // Adjusted ping interval to 25 seconds
+    pingTimeout: 60000, // Adjusted ping timeout to 60 seconds
 });
+
 
 const ongoingMessageIds = new Map();
 const starting_prompt = "You are a helpful assistant";
@@ -77,8 +78,6 @@ io.on('connection', (socket) => {
         //socket.leave('some-room');
     });
 });
-
-
 
 async function generateConversationTitle(user_message) {
     const context = [
@@ -115,7 +114,7 @@ async function improvePrompt(user_message) {
 
 async function reply(user_id, msg, agent_id, conversation_id, socket) {
     if (!ongoingMessageIds.get(user_id)) {
-        return
+        return;
     }
 
     const { data: user, error: user_error } = await getUserById(user_id);
@@ -194,24 +193,32 @@ async function reply(user_id, msg, agent_id, conversation_id, socket) {
     });
 
     let ai_tokens = 0;
+    let fullMessage = '';
     for await (const chunk of response) {
         if (chunk.choices[0] && chunk.choices[0].delta && chunk.choices[0].delta.content) {
+            fullMessage += chunk.choices[0].delta.content;
             io.to(socket.id).emit('message', {
                 id: messageId,
                 senderId: user_id,
                 text: chunk.choices[0].delta.content,
                 conversation_id: conversation_id,
-                title: conversation_name
+                title: conversation_name,
+                complete: false // Set to false for intermediate chunks
             });
 
             ai_tokens += calculate_tokens(chunk.choices[0].delta.content);
-            ai_message += chunk.choices[0].delta.content;
-        } else {
-            io.to(socket.id).emit('message', {
-                complete: true
-            });
         }
     }
+
+    // Emit a final message to indicate completion
+    io.to(socket.id).emit('message', {
+        id: messageId,
+        senderId: user_id,
+        text: fullMessage, // Ensure the full message is emitted with the final chunk
+        conversation_id: conversation_id,
+        title: conversation_name,
+        complete: true // Set to true for the final chunk
+    });
 
     console.log("ai_tokens", ai_tokens);
     total_tokens = user_tokens + ai_tokens;
@@ -220,10 +227,11 @@ async function reply(user_id, msg, agent_id, conversation_id, socket) {
         await user_subscriptions.updateCredits(user_id, subscription.credits - total_tokens);
     }
 
-    context.push({ role: 'system', content: ai_message });
+    context.push({ role: 'system', content: fullMessage });
     await updateConversation(conversation_id, conversation_name, context, user_id);
     ongoingMessageIds.delete(user_id);
 }
+
 
 /********************* User Management ***********/
 app.post('/sign_up', async (req, res) => {
