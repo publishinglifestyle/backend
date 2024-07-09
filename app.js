@@ -46,8 +46,8 @@ const io = socketIo(server, {
     cors: {
         origin: '*',
     },
-    pingInterval: 25000, // Adjusted ping interval to 25 seconds
-    pingTimeout: 60000, // Adjusted ping timeout to 60 seconds
+    //pingInterval: 25000, // Adjusted ping interval to 25 seconds
+    //pingTimeout: 500, // Adjusted ping timeout to 60 seconds
 });
 
 
@@ -57,27 +57,28 @@ const starting_prompt = "You are a helpful assistant";
 io.on('connection', (socket) => {
     console.log("New connection: ", socket.id);
 
-    //socket.join('some-room');
-
-    const sendMessageHandler = async ({ senderId, message, agent_id, conversation_id }) => {
+    const sendMessageHandler = ({ senderId, message, agent_id, conversation_id }) => {
         const newMessageId = `msg-${Date.now()}`;
-        try {
-            ongoingMessageIds.set(senderId, newMessageId);
-            await reply(senderId, message, agent_id, conversation_id, socket);
-        } catch (error) {
+        ongoingMessageIds.set(senderId, newMessageId);
+
+        // Call reply without awaiting
+        reply(senderId, message, agent_id, conversation_id, socket.id).catch(error => {
             console.error('Error handling sendMessage:', error);
             socket.emit('error', { message: 'Failed to process message.' });
-        }
+        });
     };
 
     socket.on('sendMessage', sendMessageHandler);
 
     socket.on('disconnect', () => {
         console.log(`User disconnected: ${socket.id}`);
-        // Cleanup if needed
-        //socket.leave('some-room');
     });
 });
+
+app.get('/stopSequence', authenticateJWT, (req, res) => {
+    ongoingMessageIds.delete(req.userId);
+    res.json({ response: true });
+})
 
 async function generateConversationTitle(user_message) {
     const context = [
@@ -112,16 +113,91 @@ async function improvePrompt(user_message) {
     return response.choices[0].message.content;
 }
 
-async function reply(user_id, msg, agent_id, conversation_id, socket) {
-    if (!ongoingMessageIds.get(user_id)) {
-        return;
-    }
+const handleStream = (response, user, user_id, subscription, socketId, messageId, conversation_id, conversation_name, context, user_tokens) => {
+    return new Promise((resolve, reject) => {
+        let fullMessage = '';
+        let ai_tokens = 0;
 
-    const { data: user, error: user_error } = await getUserById(user_id);
-    const { data: subscription, error: subscription_error } = await user_subscriptions.getSubscription(user_id);
-    if ((!subscription || !subscription.is_active) && user.role != 'owner') {
-        io.to(socket.id).emit('message', {
-            id: ongoingMessageIds.get(user_id),
+        response.data.on('data', async (chunk) => {
+            const lines = chunk.toString().split('\n').filter(line => line.trim() !== '');
+
+            for await (const line of lines) {
+                const message = line.replace(/^data: /, '');
+                console.log(message)
+                if (message === '[DONE]') {
+                    const total_tokens = user_tokens + ai_tokens;
+
+                    if (user.role !== 'owner') {
+                        try {
+                            await user_subscriptions.updateCredits(user_id, subscription.credits - total_tokens);
+                        } catch (err) {
+                            reject(err);
+                            return;
+                        }
+                    }
+
+                    if (io.sockets.sockets.get(socketId)) {
+                        ai_tokens += calculate_tokens(fullMessage);
+
+                        io.to(socketId).emit('message', {
+                            id: messageId,
+                            senderId: user_id,
+                            text: "",
+                            conversation_id: conversation_id,
+                            title: conversation_name,
+                            complete: true
+                        });
+                    }
+
+                    context.push({ role: 'system', content: fullMessage });
+                    try {
+                        await updateConversation(conversation_id, conversation_name, context, user_id);
+                    } catch (err) {
+                        reject(err);
+                        return;
+                    }
+                    resolve(fullMessage);
+                    return;
+                }
+
+                let token;
+                try {
+                    token = JSON.parse(message)?.choices?.[0]?.delta?.content;
+                } catch (error) {
+                    console.error('Error parsing message', message);
+                }
+                if (token) {
+                    fullMessage += token;
+
+                    if (io.sockets.sockets.get(socketId)) {
+                        io.to(socketId).emit('message', {
+                            id: messageId,
+                            senderId: user_id,
+                            text: token,
+                            conversation_id: conversation_id,
+                            title: conversation_name,
+                            complete: false // Set to false for intermediate chunks
+                        });
+                    }
+                }
+            }
+        });
+
+        response.data.on('end', () => {
+            resolve(fullMessage);
+        });
+
+        response.data.on('error', reject);
+    });
+};
+
+async function reply(user_id, msg, agent_id, conversation_id, socketId) {
+    console.log("Processing message for user:", user_id);
+    const { data: user } = await getUserById(user_id);
+    const { data: subscription } = await user_subscriptions.getSubscription(user_id);
+
+    if ((!subscription || !subscription.is_active) && user.role !== 'owner') {
+        io.to(socketId).emit('message', {
             senderId: user_id,
             text: 'You need an active subscription to continue using the service',
             complete: true,
@@ -130,9 +206,8 @@ async function reply(user_id, msg, agent_id, conversation_id, socket) {
         return;
     }
 
-    if (subscription && subscription.credits <= 0 && user.role != 'owner') {
-        io.to(socket.id).emit('message', {
-            id: ongoingMessageIds.get(user_id),
+    if (subscription && subscription.credits <= 0 && user.role !== 'owner') {
+        io.to(socketId).emit('message', {
             senderId: user_id,
             text: 'You need to purchase more credits to continue using the service',
             complete: true,
@@ -141,27 +216,21 @@ async function reply(user_id, msg, agent_id, conversation_id, socket) {
         return;
     }
 
-    let total_tokens = 0;
     const user_tokens = calculate_tokens(msg);
-    console.log("user_tokens", user_tokens);
-
     let context;
     let conversation;
     let conversation_name = "";
-    let ai_message = "";
     let temperature = 0.5;
     let agent_prompt = "";
-    console.log("conversation_id", conversation_id);
 
     if (agent_id) {
-        const { data: agent, error: agent_error } = await getAgentById(agent_id);
+        const { data: agent } = await getAgentById(agent_id);
         agent_prompt = agent.prompt;
-        agent_type = agent.type;
         temperature = agent.temperature;
     }
 
     if (conversation_id) {
-        const { data: conversation_data, error: conversation_error } = await getConversation(conversation_id);
+        const { data: conversation_data } = await getConversation(conversation_id);
         conversation = conversation_data;
         context = conversation.context;
 
@@ -180,58 +249,34 @@ async function reply(user_id, msg, agent_id, conversation_id, socket) {
         } else {
             conversation_name = conversation.name;
         }
-    }
 
-    const messageId = ongoingMessageIds.get(user_id);
+        const url = 'https://api.openai.com/v1/chat/completions';
+        const headers = {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${process.env.OPEN_AI_KEY}`
+        };
+        const data = {
+            model: 'gpt-4o',
+            messages: context,
+            temperature: temperature,
+            stream: true
+        };
 
-    const response = await openai.chat.completions.create({
-        messages: context,
-        model: 'gpt-4o',
-        temperature: temperature,
-        stream: true,
-        //stream_options: { "include_usage": true }
-    });
+        const messageId = ongoingMessageIds.get(user_id);
 
-    let ai_tokens = 0;
-    let fullMessage = '';
-    for await (const chunk of response) {
-        if (chunk.choices[0] && chunk.choices[0].delta && chunk.choices[0].delta.content) {
-            fullMessage += chunk.choices[0].delta.content;
-            io.to(socket.id).emit('message', {
-                id: messageId,
-                senderId: user_id,
-                text: chunk.choices[0].delta.content,
-                conversation_id: conversation_id,
-                title: conversation_name,
-                complete: false // Set to false for intermediate chunks
+        axios.post(url, data, { headers, responseType: 'stream' })
+            .then(response => {
+                return handleStream(response, user, user_id, subscription, socketId, messageId, conversation_id, conversation_name, context, user_tokens);
+            })
+            .then(fullMessage => {
+                //console.log("Full message received:", fullMessage);
+            })
+            .catch(error => {
+                console.error('Error handling stream:', error);
+                io.to(socketId).emit('error', { message: 'Failed to process message.' });
             });
-
-            ai_tokens += calculate_tokens(chunk.choices[0].delta.content);
-        }
     }
-
-    // Emit a final message to indicate completion
-    io.to(socket.id).emit('message', {
-        id: messageId,
-        senderId: user_id,
-        text: '', // Ensure the full message is emitted with the final chunk
-        conversation_id: conversation_id,
-        title: conversation_name,
-        complete: true // Set to true for the final chunk
-    });
-
-    console.log("ai_tokens", ai_tokens);
-    total_tokens = user_tokens + ai_tokens;
-
-    if (user.role != 'owner') {
-        await user_subscriptions.updateCredits(user_id, subscription.credits - total_tokens);
-    }
-
-    context.push({ role: 'system', content: fullMessage });
-    await updateConversation(conversation_id, conversation_name, context, user_id);
-    ongoingMessageIds.delete(user_id);
 }
-
 
 /********************* User Management ***********/
 app.post('/sign_up', async (req, res) => {
