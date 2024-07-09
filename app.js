@@ -189,7 +189,7 @@ async function reply(user_id, msg, agent_id, conversation_id, socket) {
         model: 'gpt-4o',
         temperature: temperature,
         stream: true,
-        stream_options: { "include_usage": true }
+        //stream_options: { "include_usage": true }
     });
 
     let ai_tokens = 0;
@@ -214,7 +214,7 @@ async function reply(user_id, msg, agent_id, conversation_id, socket) {
     io.to(socket.id).emit('message', {
         id: messageId,
         senderId: user_id,
-        text: fullMessage, // Ensure the full message is emitted with the final chunk
+        text: '', // Ensure the full message is emitted with the final chunk
         conversation_id: conversation_id,
         title: conversation_name,
         complete: true // Set to true for the final chunk
