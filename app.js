@@ -75,11 +75,6 @@ io.on('connection', (socket) => {
     });
 });
 
-app.get('/stopSequence', authenticateJWT, (req, res) => {
-    ongoingMessageIds.delete(req.userId);
-    res.json({ response: true });
-})
-
 async function generateConversationTitle(user_message) {
     const context = [
         { role: 'system', content: "You are a title generator. Your job is to generate a short title that captures the essence of the user message. Your title must be no longer than 5 words." },
@@ -94,11 +89,11 @@ async function generateConversationTitle(user_message) {
     return response.choices[0].message.content;
 }
 
-async function improvePrompt(user_message) {
+async function improvePrompt(user_message, example) {
     const context = [
         {
             role: 'system',
-            content: "Act as an image description enhancer. Your job is to improve the description of the image. Example of your response: A Disney-style cartoon illustration of a mother otter and her baby otter. The mother otter has a loving, gentle expression with bright, friendly eyes and soft brown fur. The baby otter is smaller, with big, curious eyes and fluffy fur. They are floating together on their backs in a peaceful river surrounded by lush green plants and flowers. The scene is heartwarming and charming, capturing a tender moment between the mother and her child."
+            content: "Act as an image description enhancer. Your job is to improve the description of the image. Example of your response: " + example
         },
         {
             role: 'user',
@@ -117,13 +112,17 @@ const handleStream = (response, user, user_id, subscription, socketId, messageId
     return new Promise((resolve, reject) => {
         let fullMessage = '';
         let ai_tokens = 0;
+        let buffer = '';
 
         response.data.on('data', async (chunk) => {
-            const lines = chunk.toString().split('\n').filter(line => line.trim() !== '');
+            buffer += chunk.toString();
+            let lines = buffer.split('\n');
+            buffer = lines.pop(); // Keep the last partial line in the buffer
 
             for await (const line of lines) {
+                if (line.trim() === '') continue; // Skip empty lines
                 const message = line.replace(/^data: /, '');
-                console.log(message)
+
                 if (message === '[DONE]') {
                     const total_tokens = user_tokens + ai_tokens;
 
@@ -166,6 +165,7 @@ const handleStream = (response, user, user_id, subscription, socketId, messageId
                 } catch (error) {
                     console.error('Error parsing message', message);
                 }
+
                 if (token) {
                     fullMessage += token;
 
@@ -190,6 +190,7 @@ const handleStream = (response, user, user_id, subscription, socketId, messageId
         response.data.on('error', reject);
     });
 };
+
 
 async function reply(user_id, msg, agent_id, conversation_id, socketId) {
     console.log("Processing message for user:", user_id);
@@ -454,7 +455,7 @@ app.post('/generate_image', authenticateJWT, async (req, res) => {
     const { data: agent, error: agent_error } = await getAgentById(agent_id);
     context[0].content = agent.prompt;
 
-    const new_prompt = await improvePrompt(agent.prompt + " " + msg);
+    const new_prompt = await improvePrompt(msg, agent.prompt);
 
     const image_to_generate = new_prompt;
     console.log("image_to_generate", image_to_generate);
@@ -481,7 +482,7 @@ app.post('/generate_image', authenticateJWT, async (req, res) => {
         const base64String = imageBuffer.toString('base64');
 
         // Upload the image
-        const messageId = ongoingMessageIds.get(req.userId);
+        const messageId = `msg-${Date.now()}`
         const randomId = uuid.v4().substring(0, 8);
         const { data, error } = await upload('images', base64String, randomId);
         console.log(data)
