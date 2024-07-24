@@ -7,8 +7,11 @@ const bodyParser = require('body-parser');
 const axios = require('axios');
 const uuid = require('uuid');
 const cors = require('cors');
+const OpenAI = require('openai');
+const openai = new OpenAI({ apiKey: process.env.OPEN_AI_KEY });
+
 const { createUser, login, getUserById, getUserByEmail, updateUser, resetPassword, initiatePasswordReset, resetUserPassword } = require('./database/users');
-const { upload, download } = require('./database/images');
+const { upload, download, downloadAndConvert } = require('./database/images');
 const { calculate_tokens } = require('./utils/tokenizer');
 const subscriptions = require('./database/subscriptions');
 const user_subscriptions = require('./database/user_subscriptions');
@@ -16,8 +19,7 @@ const stripe_subscriptions = require('./utils/stripe_subscriptions');
 const { createAgent, updateAgent, getAgentById, getAgentsPerLevel, getAllAgents, deleteAgent } = require('./database/agents');
 const { createConversation, updateConversation, getConversationsByUserId, getConversation, deleteConversation, updateSystemContext } = require('./database/conversations');
 const { sendResetPasswordEmail } = require('./utils/sendgrid');
-const OpenAI = require('openai');
-const openai = new OpenAI({ apiKey: process.env.OPEN_AI_KEY });
+const { generateImage, checkImageStatus, pressButton } = require('./utils/midjourney');
 
 const app = express();
 const compression = require('compression');
@@ -45,9 +47,7 @@ server.listen(PORT, () => {
 const io = socketIo(server, {
     cors: {
         origin: '*',
-    },
-    //pingInterval: 25000, // Adjusted ping interval to 25 seconds
-    //pingTimeout: 500, // Adjusted ping timeout to 60 seconds
+    }
 });
 
 
@@ -454,54 +454,82 @@ app.post('/generate_image', authenticateJWT, async (req, res) => {
 
     const { data: agent, error: agent_error } = await getAgentById(agent_id);
     context[0].content = agent.prompt;
+    const messageId = `msg-${Date.now()}`
+    let response, imageUrl;
+    if (agent.model == 'dall-e') {
+        const new_prompt = await improvePrompt(msg, agent.prompt);
 
-    const new_prompt = await improvePrompt(msg, agent.prompt);
+        const image_to_generate = new_prompt;
+        console.log("image_to_generate", image_to_generate);
 
-    const image_to_generate = new_prompt;
-    console.log("image_to_generate", image_to_generate);
-
-    const response = await openai.images.generate({
-        model: "dall-e-3",
-        prompt: "I NEED to test how the tool works with extremely simple prompts. DO NOT add any detail, just use it AS-IS:" + image_to_generate,
-        n: 1,
-        size: "1024x1024",
-    });
-
-    console.log(response.data)
-
-    let imageUrl = response.data[0].url;
-
-    // Download image and convert to Base64
-    try {
-        const imageResponse = await axios({
-            url: imageUrl,
-            responseType: 'arraybuffer'
+        response = await openai.images.generate({
+            model: "dall-e-3",
+            prompt: "I NEED to test how the tool works with extremely simple prompts. DO NOT add any detail, just use it AS-IS:" + image_to_generate,
+            n: 1,
+            size: "1024x1024",
         });
 
-        const imageBuffer = Buffer.from(imageResponse.data, 'binary');
-        const base64String = imageBuffer.toString('base64');
+        imageUrl = response.data[0].url;
 
-        // Upload the image
-        const messageId = `msg-${Date.now()}`
-        const randomId = uuid.v4().substring(0, 8);
-        const { data, error } = await upload('images', base64String, randomId);
-        console.log(data)
-        if (error) {
-            return res.status(500).json({ error: 'Failed to upload the image' });
+        // Download image and convert to Base64
+        try {
+            imageUrl = await downloadAndConvert(imageUrl)
+            context.push({ role: 'user', content: msg });
+            context.push({ role: 'system', content: imageUrl });
+            await updateConversation(conversation_id, conversation_name, context, req.userId);
+
+            return res.status(200).json({ response: imageUrl, conversation_name: conversation_name, messageId: messageId, image_ready: true });
+        } catch (error) {
+            console.error('Error downloading or processing image:', error);
+            return res.status(500).json({ error: 'Failed to download or process the image' });
         }
 
-        // Update context with the image URL
-        imageUrl = "https://urrfcikwbcocmanctoca.supabase.co/storage/v1/object/public/" + data.fullPath
-        context.push({ role: 'user', content: msg });
-        context.push({ role: 'system', content: imageUrl });
-        await updateConversation(conversation_id, conversation_name, context, req.userId);
-
-        return res.status(200).json({ response: imageUrl, conversation_name: conversation_name, messageId: messageId });
-    } catch (error) {
-        console.error('Error downloading or processing image:', error);
-        return res.status(500).json({ error: 'Failed to download or process the image' });
+    } else if (agent.model == 'midjourney') {
+        response = await generateImage(msg);
+        return res.status(200).json({ response: response, conversation_name: conversation_name, messageId: messageId, image_ready: false });
     }
 });
+
+/********************* Midjourney Specific ***********/
+app.post('/check_image_status', authenticateJWT, async (req, res) => {
+    const { msg, messageId, conversation_id } = req.body;
+    const { data: conversation_data, error: conversation_error } = await getConversation(conversation_id);
+    console.log("messageId", messageId)
+    const response = await checkImageStatus(messageId);
+    let imageUrl
+
+    if (response.status == 'DONE') {
+        let context = conversation_data.context;
+        imageUrl = response.uri;
+
+        context.push({ role: 'user', content: msg });
+        context.push({ role: 'system', content: imageUrl, buttons: response.buttons, messageId: messageId });
+        await updateConversation(conversation_id, conversation_data.name, context, req.userId);
+    }
+    return res.status(200).json({
+        response: {
+            messageId: messageId,
+            status: response.status,
+            imageUrl: imageUrl,
+            conversation_name: conversation_data.name,
+            buttons: response.buttons
+        }
+    });
+})
+
+app.post('/press_button', authenticateJWT, async (req, res) => {
+    const { conversation_id, messageId, midjourneyMessageId, button } = req.body;
+    const { data: conversation_data, error: conversation_error } = await getConversation(conversation_id);
+    const response = await pressButton(midjourneyMessageId, button);
+    console.log(response)
+    return res.status(200).json({
+        response: {
+            messageId: response.messageId
+        },
+        conversation_name: conversation_data.name,
+        image_ready: false
+    });
+})
 
 /********************* Subscriptions ***********/
 app.post('/create_subscription', authenticateJWT, onlyOwner, async (req, res) => {
@@ -619,24 +647,24 @@ app.get('/get_stripe_portal', authenticateJWT, async (req, res) => {
 
 /********************* Agents ***********/
 app.post('/create_agent', authenticateJWT, onlyOwner, async (req, res) => {
-    const { name, temperature, type, level, prompt } = req.body;
+    const { name, temperature, type, level, prompt, model } = req.body;
 
-    if (!name || !type || !level || !prompt) {
+    if (!name || !type || !level || !prompt || !model) {
         return res.status(400).json({ response: 'Params missing.' });
     }
 
-    const { data, error } = await createAgent(name, temperature, type, level, prompt);
+    const { data, error } = await createAgent(name, temperature, type, level, prompt, model);
     return res.status(200).json({ response: data });
 });
 
 app.post('/update_agent', authenticateJWT, onlyOwner, async (req, res) => {
-    const { agent_id, name, temperature, type, level, prompt } = req.body;
+    const { agent_id, name, temperature, type, level, prompt, model } = req.body;
 
-    if (!agent_id || !name || !type || !level || !prompt) {
+    if (!agent_id || !name || !type || !level || !prompt || !model) {
         return res.status(400).json({ response: 'Params missing.' });
     }
 
-    const { data, error } = await updateAgent(agent_id, name, temperature, type, level, prompt);
+    const { data, error } = await updateAgent(agent_id, name, temperature, type, level, prompt, model);
     return res.status(200).json({ response: data });
 });
 

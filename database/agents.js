@@ -3,23 +3,23 @@ require('dotenv').config();
 const { createClient } = require('@supabase/supabase-js');
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_API_KEY);
 
-async function createAgent(name, temperature, type, level, prompt) {
+async function createAgent(name, temperature, type, level, prompt, model) {
     const context = []
     const { data, error } = await supabase
         .from('Agents')
         .insert([
-            { name, temperature, type, level, prompt },
+            { name, temperature, type, level, prompt, model },
         ])
         .select()
 
     return { data, error }
 }
 
-async function updateAgent(agent_id, name, temperature, type, level, prompt) {
+async function updateAgent(agent_id, name, temperature, type, level, prompt, model) {
     try {
         const { data, error: updateError } = await supabase
             .from('Agents')
-            .update({ name, temperature, type, level, prompt })
+            .update({ name, temperature, type, level, prompt, model })
             .select()
             .match({ id: agent_id })
 
@@ -39,7 +39,7 @@ async function getAgentsPerLevel(level) {
         const { data, error } = await supabase
             .from('Agents')
             .select()
-            .lte('level', level)  
+            .lte('level', level)
 
         if (error) {
             throw error;
