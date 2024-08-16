@@ -82,7 +82,7 @@ async function generateConversationTitle(user_message) {
     ];
     const response = await openai.chat.completions.create({
         messages: context,
-        model: 'gpt-4o',
+        model: 'gpt-4o-mini',
         temperature: 0,
     });
 
@@ -98,6 +98,25 @@ async function improvePrompt(user_message, example) {
         {
             role: 'user',
             content: `Improve this image: "${user_message}".`
+        }
+    ];
+    const response = await openai.chat.completions.create({
+        messages: context,
+        model: 'gpt-4o'
+    });
+
+    return response.choices[0].message.content;
+}
+
+async function translatePrompt(user_message) {
+    const context = [
+        {
+            role: 'system',
+            content: "Act as a professional translator. Your job is to tranlsate the user message to English. Your response must only contain the translation without any further texts or comments."
+        },
+        {
+            role: 'user',
+            content: `User message to translate in English: "${user_message}".`
         }
     ];
     const response = await openai.chat.completions.create({
@@ -200,7 +219,7 @@ async function reply(user_id, msg, agent_id, conversation_id, socketId) {
     if ((!subscription || !subscription.is_active) && user.role !== 'owner') {
         io.to(socketId).emit('message', {
             senderId: user_id,
-            text: 'You need an active subscription to continue using the service',
+            text: 'You need an active subscription to continue using the service. Go to My Profile to Start a Subscription',
             complete: true,
             type: 'chat'
         });
@@ -210,7 +229,7 @@ async function reply(user_id, msg, agent_id, conversation_id, socketId) {
     if (subscription && subscription.credits <= 0 && user.role !== 'owner') {
         io.to(socketId).emit('message', {
             senderId: user_id,
-            text: 'You need to purchase more credits to continue using the service',
+            text: 'You need to purchase more credits to continue using the service. Go to My Profile to Start a Subscription',
             complete: true,
             type: 'chat'
         });
@@ -257,7 +276,7 @@ async function reply(user_id, msg, agent_id, conversation_id, socketId) {
             'Authorization': `Bearer ${process.env.OPEN_AI_KEY}`
         };
         const data = {
-            model: 'gpt-4o',
+            model: 'gpt-4o-mini',
             messages: context,
             temperature: temperature,
             stream: true
@@ -440,13 +459,25 @@ app.get('/get_profile_pic', authenticateJWT, async (req, res) => {
 
 /********************* Image Generation ***********/
 app.post('/generate_image', authenticateJWT, async (req, res) => {
-    const { msg, agent_id, conversation_id } = req.body;
+    const { msg, agent_id, conversation_id, save_user_prompt } = req.body;
+
+    const { data: user } = await getUserById(req.userId);
+    const { data: subscription } = await user_subscriptions.getSubscription(req.userId);
+
+    if ((!subscription || !subscription.is_active) && user.role !== 'owner') {
+        return res.status(200).json({ error: 'You need an active subscription to continue using the service. Go to My Profile to Start a Subscription' });
+    }
+
+    if (subscription && subscription.credits <= 0 && user.role !== 'owner') {
+        return res.status(200).json({ error: 'You need to purchase more credits to continue using the service. Go to My Profile to Start a Subscription' });
+    }
+
     let conversation_name = "";
 
     const { data: conversation_data, error: conversation_error } = await getConversation(conversation_id);
     let context = conversation_data.context;
 
-    if (context.length === 2) {
+    if (context.length === 1) {
         conversation_name = await generateConversationTitle(msg);
     } else {
         conversation_name = conversation_data.name;
@@ -474,7 +505,9 @@ app.post('/generate_image', authenticateJWT, async (req, res) => {
         // Download image and convert to Base64
         try {
             imageUrl = await downloadAndConvert(imageUrl)
-            context.push({ role: 'user', content: msg });
+            if (save_user_prompt)
+                context.push({ role: 'user', content: msg });
+
             context.push({ role: 'system', content: imageUrl });
             await updateConversation(conversation_id, conversation_name, context, req.userId);
 
@@ -485,24 +518,28 @@ app.post('/generate_image', authenticateJWT, async (req, res) => {
         }
 
     } else if (agent.model == 'midjourney') {
-        response = await generateImage(msg);
+        const translated_message = await translatePrompt(msg);
+        response = await generateImage(translated_message);
         return res.status(200).json({ response: response, conversation_name: conversation_name, messageId: messageId, image_ready: false });
     }
 });
 
 /********************* Midjourney Specific ***********/
 app.post('/check_image_status', authenticateJWT, async (req, res) => {
-    const { msg, messageId, conversation_id } = req.body;
+    const { msg, messageId, conversation_id, save_user_prompt } = req.body;
     const { data: conversation_data, error: conversation_error } = await getConversation(conversation_id);
     console.log("messageId", messageId)
     const response = await checkImageStatus(messageId);
     let imageUrl
 
+    console.log("response", response)
+
     if (response.status == 'DONE') {
         let context = conversation_data.context;
         imageUrl = response.uri;
 
-        context.push({ role: 'user', content: msg });
+        if (save_user_prompt)
+            context.push({ role: 'user', content: msg });
         context.push({ role: 'system', content: imageUrl, buttons: response.buttons, messageId: messageId });
         await updateConversation(conversation_id, conversation_data.name, context, req.userId);
     }
@@ -647,24 +684,24 @@ app.get('/get_stripe_portal', authenticateJWT, async (req, res) => {
 
 /********************* Agents ***********/
 app.post('/create_agent', authenticateJWT, onlyOwner, async (req, res) => {
-    const { name, temperature, type, level, prompt, model } = req.body;
+    const { name, temperature, type, level, prompt, model, n_buttons, buttons } = req.body;
 
-    if (!name || !type || !level || !prompt || !model) {
+    if (!name || !type || !level || !prompt || !buttons) {
         return res.status(400).json({ response: 'Params missing.' });
     }
 
-    const { data, error } = await createAgent(name, temperature, type, level, prompt, model);
+    const { data, error } = await createAgent(name, temperature, type, level, prompt, model, n_buttons, buttons);
     return res.status(200).json({ response: data });
 });
 
 app.post('/update_agent', authenticateJWT, onlyOwner, async (req, res) => {
-    const { agent_id, name, temperature, type, level, prompt, model } = req.body;
+    const { agent_id, name, temperature, type, level, prompt, model, n_buttons, buttons } = req.body;
 
-    if (!agent_id || !name || !type || !level || !prompt || !model) {
+    if (!agent_id || !name || !type || !level || !prompt || !buttons) {
         return res.status(400).json({ response: 'Params missing.' });
     }
 
-    const { data, error } = await updateAgent(agent_id, name, temperature, type, level, prompt, model);
+    const { data, error } = await updateAgent(agent_id, name, temperature, type, level, prompt, model, n_buttons, buttons);
     return res.status(200).json({ response: data });
 });
 

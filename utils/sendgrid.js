@@ -11,7 +11,7 @@ async function sendResetPasswordEmail(to, token) {
         let html = await fs.readFile(path.join(__dirname, 'emails', 'reset_password.html'), 'utf8');
 
         // Replace the placeholder with the actual reset link
-        const resetLink = `https://your-website.com/reset-password?token=${token}`;
+        const resetLink = `https://lowcontent.ai/reset_password?resetToken=${token}`;
         html = html.replace('{{RESET_LINK}}', resetLink);
 
         const msg = {

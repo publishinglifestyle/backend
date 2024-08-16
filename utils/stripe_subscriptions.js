@@ -10,6 +10,11 @@ async function createSession(email, price_id) {
                 quantity: 1,
             },
         ],
+        discounts: [
+            {
+                coupon: 'AcelvjAW',
+            },
+        ],
         customer_email: email,
         success_url: process.env.FRONTEND_URL + 'chat?session_id={CHECKOUT_SESSION_ID}'
     });

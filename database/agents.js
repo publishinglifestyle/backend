@@ -3,23 +3,23 @@ require('dotenv').config();
 const { createClient } = require('@supabase/supabase-js');
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_API_KEY);
 
-async function createAgent(name, temperature, type, level, prompt, model) {
+async function createAgent(name, temperature, type, level, prompt, model, n_buttons, buttons) {
     const context = []
     const { data, error } = await supabase
         .from('Agents')
         .insert([
-            { name, temperature, type, level, prompt, model },
+            { name, temperature, type, level, prompt, model, n_buttons, buttons },
         ])
         .select()
 
     return { data, error }
 }
 
-async function updateAgent(agent_id, name, temperature, type, level, prompt, model) {
+async function updateAgent(agent_id, name, temperature, type, level, prompt, model, n_buttons, buttons) {
     try {
         const { data, error: updateError } = await supabase
             .from('Agents')
-            .update({ name, temperature, type, level, prompt, model })
+            .update({ name, temperature, type, level, prompt, model, n_buttons, buttons })
             .select()
             .match({ id: agent_id })
 
@@ -57,15 +57,16 @@ async function getAllAgents() {
         const { data, error } = await supabase
             .from('Agents')
             .select()
+            .order('name', { ascending: true })
 
         if (error) {
             throw error;
         }
 
-        return { data, error }
+        return { data, error };
     } catch (error) {
         console.error('Failed to retrieve agents:', error);
-        return { error }
+        return { error };
     }
 }
 

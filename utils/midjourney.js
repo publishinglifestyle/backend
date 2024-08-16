@@ -9,7 +9,7 @@ async function generateImage(prompt) {
             Authorization: "Bearer " + process.env.MIDJOURNEY_TOKEN,
         },
         data: {
-            prompt: prompt,
+            prompt: prompt + " —v 6.0",
         },
     }
 
