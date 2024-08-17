@@ -1,6 +1,17 @@
 const axios = require("axios")
 
-async function generateImage(prompt) {
+async function generateImage(prompt, prompt_commands) {
+    let prompt_commands_string = ""
+    for (let i = 0; i < prompt_commands.length; i++) {
+        prompt_commands_string += " " + prompt_commands[i].command + " " + prompt_commands[i].value
+    }
+
+    if (prompt_commands.length > 0) {
+        prompt = prompt + " —v 6.0 " + prompt_commands_string
+    } else {
+        prompt = prompt + " —v 6.0"
+    }
+
     const config = {
         method: "post",
         url: "https://api.imaginepro.ai/api/v1/midjourney/imagine",
@@ -9,9 +20,11 @@ async function generateImage(prompt) {
             Authorization: "Bearer " + process.env.MIDJOURNEY_TOKEN,
         },
         data: {
-            prompt: prompt + " —v 6.0",
+            prompt: prompt
         },
     }
+
+    console.log(config)
 
     try {
         const response = await axios(config)

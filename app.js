@@ -459,7 +459,7 @@ app.get('/get_profile_pic', authenticateJWT, async (req, res) => {
 
 /********************* Image Generation ***********/
 app.post('/generate_image', authenticateJWT, async (req, res) => {
-    const { msg, agent_id, conversation_id, save_user_prompt } = req.body;
+    const { msg, agent_id, conversation_id, save_user_prompt, prompt_commands } = req.body;
 
     const { data: user } = await getUserById(req.userId);
     const { data: subscription } = await user_subscriptions.getSubscription(req.userId);
@@ -519,7 +519,7 @@ app.post('/generate_image', authenticateJWT, async (req, res) => {
 
     } else if (agent.model == 'midjourney') {
         const translated_message = await translatePrompt(msg);
-        response = await generateImage(translated_message);
+        response = await generateImage(translated_message, prompt_commands);
         return res.status(200).json({ response: response, conversation_name: conversation_name, messageId: messageId, image_ready: false });
     }
 });
