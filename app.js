@@ -5,13 +5,13 @@ const socketIo = require('socket.io');
 const jwt = require('jsonwebtoken');
 const bodyParser = require('body-parser');
 const axios = require('axios');
-const uuid = require('uuid');
+const cron = require('node-cron');
 const cors = require('cors');
 const OpenAI = require('openai');
 const openai = new OpenAI({ apiKey: process.env.OPEN_AI_KEY });
 
 const { createUser, login, getUserById, getUserByEmail, updateUser, resetPassword, initiatePasswordReset, resetUserPassword } = require('./database/users');
-const { upload, download, downloadAndConvert } = require('./database/images');
+const { upload, download, downloadAndConvert, listImages, deleteImages } = require('./database/images');
 const { calculate_tokens } = require('./utils/tokenizer');
 const subscriptions = require('./database/subscriptions');
 const user_subscriptions = require('./database/user_subscriptions');
@@ -437,6 +437,20 @@ app.post('/upload_profile_pic', authenticateJWT, async (req, res) => {
     res.json({ response: true, data });
 });
 
+app.post('/upload_image', authenticateJWT, async (req, res) => {
+    const { base64String } = req.body;
+    if (!base64String) {
+        return res.status(400).send('No file data provided.');
+    }
+
+    const { data, error } = await upload('temp_images', base64String, req.userId);
+    if (error) {
+        return res.status(500).send(error);
+    }
+
+    res.json({ response: true, url: "https://urrfcikwbcocmanctoca.supabase.co/storage/v1/object/public/" + data.fullPath });
+});
+
 app.get('/get_profile_pic', authenticateJWT, async (req, res) => {
     const { data, error } = await download('users', req.userId);
 
@@ -818,12 +832,39 @@ async function onlyOwner(req, res, next) {
     next();
 }
 
-async function onlyActiveSubscription(req, res, next) {
-    const { data: user, user_error } = await getUserById(req.userId);
-    const { data: subscription, error: subscription_error } = await user_subscriptions.getSubscription(user.id);
-    if (!subscription || !subscription.is_active) {
-        return res.status(401).json({ error: 'Unauthorized access' });
-    }
+const remove_images = async () => {
+    try {
+        console.log('Task is running. Executed every hour.');
 
-    next();
-}
+        // Define the image types to process
+        const imageTypes = ['images', 'temp_images'];
+
+        for (const type of imageTypes) {
+            // Fetch the images
+            const { data, error } = await listImages(type);
+            if (error) {
+                throw new Error(`Error fetching ${type}: ${error.message}`);
+            }
+
+            // Calculate the cutoff time (24 hours ago)
+            const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+            // Filter images that are older than 24 hours
+            const filteredData = data.filter(image => new Date(image.created_at) <= twentyFourHoursAgo);
+            const fileNames = filteredData.map(image => image.name);
+
+            // Delete the filtered images
+            const { data: deleteData, deleteError } = await deleteImages(fileNames, type);
+            if (deleteError) {
+                throw new Error(`Error deleting ${type}: ${deleteError.message}`);
+            }
+
+            console.log(`${type.charAt(0).toUpperCase() + type.slice(1)} successfully deleted:`, deleteData);
+        }
+    } catch (err) {
+        console.error('Error occurred during image removal:', err);
+    }
+};
+
+// Schedule the cron job to run every hour
+cron.schedule('0 * * * *', remove_images);

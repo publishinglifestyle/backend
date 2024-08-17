@@ -67,8 +67,29 @@ async function downloadAndConvert(imageUrl) {
     return imageUrl;
 }
 
+async function listImages(bucket) {
+    const { data, error } = await supabase
+        .storage
+        .from(bucket)
+        .list()
+
+    return { data, error }
+}
+
+async function deleteImages(images, bucket) {
+    const { data, error } = await supabase
+        .storage
+        .from(bucket)
+        .remove(images)
+
+
+    return { data, error }
+}
+
 module.exports = {
     upload,
     download,
-    downloadAndConvert
+    downloadAndConvert,
+    listImages,
+    deleteImages
 };
