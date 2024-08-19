@@ -20,6 +20,12 @@ const { createAgent, updateAgent, getAgentById, getAgentsPerLevel, getAllAgents,
 const { createConversation, updateConversation, getConversationsByUserId, getConversation, deleteConversation, updateSystemContext } = require('./database/conversations');
 const { sendResetPasswordEmail } = require('./utils/sendgrid');
 const { generateImage, checkImageStatus, pressButton } = require('./utils/midjourney');
+const { generateSudoku } = require('./games/sudokuGenerator');
+const { generateCrossword } = require('./games/crosswordGenerator');
+const { generateNurikabe } = require('./games/nurikabeGenerator');
+const { generateWordSearch } = require('./games/wordsearchGenerator');
+const { generateHangman } = require('./games/hangmanGenerator');
+const { scrambleWords } = require('./games/wordScrumblerGenerator');
 
 const app = express();
 const compression = require('compression');
@@ -317,12 +323,12 @@ app.post('/sign_up', async (req, res) => {
 
     const result = await createUser(email, password, first_name, last_name);
 
-    if (result.error) {
+    /*if (result.error) {
         if (result.error.message.includes('already exists')) {
             return res.status(409).json({ message: result.error.message });
         }
         return res.status(500).json({ message: result.error.message });
-    }
+    }*/
 
     const { token, error, code, response } = await login(email, password);
     res.status(201).json({ message: 'User created successfully.', token: token });
@@ -472,19 +478,8 @@ app.get('/get_profile_pic', authenticateJWT, async (req, res) => {
 });
 
 /********************* Image Generation ***********/
-app.post('/generate_image', authenticateJWT, async (req, res) => {
+app.post('/generate_image', authenticateJWT, onlySubscriber, async (req, res) => {
     const { msg, agent_id, conversation_id, save_user_prompt, prompt_commands } = req.body;
-
-    const { data: user } = await getUserById(req.userId);
-    const { data: subscription } = await user_subscriptions.getSubscription(req.userId);
-
-    if ((!subscription || !subscription.is_active) && user.role !== 'owner') {
-        return res.status(200).json({ error: 'You need an active subscription to continue using the service. Go to My Profile to Start a Subscription' });
-    }
-
-    if (subscription && subscription.credits <= 0 && user.role !== 'owner') {
-        return res.status(200).json({ error: 'You need to purchase more credits to continue using the service. Go to My Profile to Start a Subscription' });
-    }
 
     let conversation_name = "";
 
@@ -674,6 +669,7 @@ app.post('/stripe/webhook', async (req, res) => {
 
 app.post('/start_subscription', authenticateJWT, async (req, res) => {
     const { price_id } = req.body;
+    //const price_id = "price_1Pp8Fq2MV6hKm3ONPm3zl9uv"
 
     const { data: user, error: user_error } = await getUserById(req.userId);
     if (!user) {
@@ -805,6 +801,47 @@ app.post('/change_conversation_name', authenticateJWT, async (req, res) => {
     return res.status(200).json({ response: data });
 })
 
+/********************* Games Management ***********/
+app.post('/generate_sudoku', authenticateJWT, onlySubscriber, (req, res) => {
+    const { difficulty } = req.body;
+    const sudoku = generateSudoku(difficulty);
+    return res.status(200).json({ response: sudoku });
+})
+
+app.post('/generate_crossword', authenticateJWT, onlySubscriber, async (req, res) => {
+    const { words } = req.body;
+    const crossword = await generateCrossword(words);
+
+    return res.status(200).json({ response: crossword });
+})
+
+app.post('/generate_nurikabe', authenticateJWT, onlySubscriber, async (req, res) => {
+    const { size = 5 } = req.body;
+
+    const puzzle = await generateNurikabe(size);
+    return res.status(200).json({ response: puzzle });
+});
+
+app.post('/generate_wordsearch', authenticateJWT, onlySubscriber, async (req, res) => {
+    const { words } = req.body;
+
+    const puzzle = generateWordSearch(words);
+    return res.status(200).json({ response: puzzle });
+})
+
+app.post('/generate_hangman', authenticateJWT, onlySubscriber, async (req, res) => {
+    const { words } = req.body;
+    const puzzle = generateHangman(words);
+    return res.status(200).json({ response: puzzle });
+})
+
+app.post('/scramble_word', authenticateJWT, onlySubscriber, async (req, res) => {
+    const { words } = req.body;
+
+    const scrambled = scrambleWords(words);
+    return res.status(200).json({ response: scrambled });
+})
+
 /* Utils */
 function authenticateJWT(req, res, next) {
     const token = req.headers.authorization;
@@ -827,6 +864,21 @@ async function onlyOwner(req, res, next) {
     const { data: user, user_error } = await getUserById(userId);
     if (user.role != 'owner') {
         return res.status(401).json({ error: 'Unauthorized access' });
+    }
+
+    next();
+}
+
+async function onlySubscriber(req, res, next) {
+    const { data: user } = await getUserById(req.userId);
+    const { data: subscription } = await user_subscriptions.getSubscription(req.userId);
+
+    if ((!subscription || !subscription.is_active) && user.role !== 'owner') {
+        return res.status(200).json({ error: 'You need an active subscription to continue using the service. Go to My Profile to Start a Subscription' });
+    }
+
+    if (subscription && subscription.credits <= 0 && user.role !== 'owner') {
+        return res.status(200).json({ error: 'You need to purchase more credits to continue using the service. Go to My Profile to Start a Subscription' });
     }
 
     next();
