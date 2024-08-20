@@ -26,6 +26,9 @@ const { generateNurikabe } = require('./games/nurikabeGenerator');
 const { generateWordSearch } = require('./games/wordsearchGenerator');
 const { generateHangman } = require('./games/hangmanGenerator');
 const { scrambleWords } = require('./games/wordScrumblerGenerator');
+const { generateCryptogram } = require('./games/cryptogramGenerator');
+const { generateMazeBase64 } = require('./games/mazeGenerator');
+const { generateMinefield } = require('./games/mineFinderGenerator');
 
 const app = express();
 const compression = require('compression');
@@ -496,6 +499,15 @@ app.post('/generate_image', authenticateJWT, onlySubscriber, async (req, res) =>
     context[0].content = agent.prompt;
     const messageId = `msg-${Date.now()}`
     let response, imageUrl;
+
+    const { data: subscription } = await user_subscriptions.getSubscription(req.userId);
+    if (subscription) {
+        if (subscription.credits >= 100000)
+            await user_subscriptions.updateCredits(req.userId, subscription.credits - 100000);
+        else
+            return res.status(200).json({ error: 'You need to purchase more credits to continue using the service. Go to My Profile to Start a Subscription' });
+    }
+
     if (agent.model == 'dall-e') {
         const new_prompt = await improvePrompt(msg, agent.prompt);
 
@@ -504,7 +516,7 @@ app.post('/generate_image', authenticateJWT, onlySubscriber, async (req, res) =>
 
         response = await openai.images.generate({
             model: "dall-e-3",
-            prompt: "I NEED to test how the tool works with extremely simple prompts. DO NOT add any detail, just use it AS-IS:" + image_to_generate,
+            prompt: "I NEED to test how the tool works with extremely simple prompts. DO NOT add any detail, just use it AS-IS: " + image_to_generate,
             n: 1,
             size: "1024x1024",
         });
@@ -840,6 +852,27 @@ app.post('/scramble_word', authenticateJWT, onlySubscriber, async (req, res) => 
 
     const scrambled = scrambleWords(words);
     return res.status(200).json({ response: scrambled });
+})
+
+app.post('/generate_cryptogram', authenticateJWT, onlySubscriber, async (req, res) => {
+    const { phrases } = req.body;
+
+    const puzzle = generateCryptogram(phrases);
+    return res.status(200).json({ response: puzzle });
+})
+
+app.post('/generate_maze', authenticateJWT, onlySubscriber, async (req, res) => {
+    const { width, height, cell_size } = req.body;
+
+    const maze = await generateMazeBase64(width, height, cell_size);
+    return res.status(200).json({ response: maze });
+})
+
+app.post('/generate_minesweeper', authenticateJWT, onlySubscriber, (req, res) => {
+    const { width, height, mines } = req.body;
+
+    const minesweeper = generateMinefield(width, height, mines);
+    return res.status(200).json({ response: minesweeper });
 })
 
 /* Utils */
