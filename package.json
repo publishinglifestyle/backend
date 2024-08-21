@@ -28,6 +28,7 @@
     "http": "^0.0.1-security",
     "jsonwebtoken": "^9.0.2",
     "lodash": "^4.17.21",
+    "minesweeper": "^1.0.5",
     "node-cron": "^3.0.3",
     "openai": "^4.52.0",
     "pngjs": "^7.0.0",

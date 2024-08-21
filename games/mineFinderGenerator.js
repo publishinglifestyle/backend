@@ -1,41 +1,53 @@
-const generateMinefield = (width, height, numMines) => {
-    // Initialize the minefield with empty cells
-    const minefield = Array.from({ length: height }, () => Array.from({ length: width }, () => ({
-        mines: 0,
-        isMine: false
-    })));
+const minesweeper = require('minesweeper');
 
-    // Place mines randomly
-    let minesPlaced = 0;
-    while (minesPlaced < numMines) {
-        const row = Math.floor(Math.random() * height);
-        const col = Math.floor(Math.random() * width);
+function generateMinefield(width, height, numMines) {
+    // Create a mine array using the library
+    const mineArray = minesweeper.generateMineArray({
+        rows: height,
+        cols: width,
+        mines: numMines
+    });
 
-        if (!minefield[row][col].isMine) {
-            minefield[row][col].isMine = true;
-            minesPlaced++;
+    // Create a board using the mine array
+    const board = new minesweeper.Board(mineArray);
+    const grid = board.grid();
 
-            // Update numbers around the mine
-            for (let r = Math.max(0, row - 1); r <= Math.min(height - 1, row + 1); r++) {
-                for (let c = Math.max(0, col - 1); c <= Math.min(width - 1); c++) {
-                    if (!minefield[r][c].isMine) {
-                        minefield[r][c].mines++;
-                    }
-                }
+    // Identify all gray cells first
+    const grayCells = [];
+
+    grid.forEach((row, rowIndex) => {
+        row.forEach((cell, colIndex) => {
+            if (cell.numAdjacentMines === 0 && !cell.isMine) {
+                grayCells.push({ rowIndex, colIndex });
             }
-        }
-    }
+        });
+    });
 
-    // Mark gray cells (those with 0 surrounding mines and no mine)
-    const output = minefield.map(row =>
-        row.map(cell => ({
-            mines: cell.mines,
-            isMine: cell.isMine,
-            isGray: cell.mines === 0 && !cell.isMine // Ensure no mine is placed on gray cells
-        }))
+    // Randomly select a subset of gray cells to display
+    const numGrayToShow = Math.floor(grayCells.length / 2); // Show 50% of gray cells
+    const grayCellsToShow = grayCells.sort(() => 0.5 - Math.random()).slice(0, numGrayToShow);
+
+    const output = grid.map((row, rowIndex) =>
+        row.map((cell, colIndex) => {
+            const isGray = grayCellsToShow.some(
+                grayCell => grayCell.rowIndex === rowIndex && grayCell.colIndex === colIndex
+            );
+            const shouldShowAsGrayInSolution = !isGray && grayCells.some(
+                grayCell => grayCell.rowIndex === rowIndex && grayCell.colIndex === colIndex
+            );
+
+            return {
+                x: colIndex,
+                y: rowIndex,
+                mines: cell.numAdjacentMines,
+                isMine: cell.isMine,
+                isGray: isGray,
+                shouldShowAsGrayInSolution: shouldShowAsGrayInSolution
+            };
+        })
     );
 
-    return output;
-};
+    return { response: output };
+}
 
 module.exports = { generateMinefield };

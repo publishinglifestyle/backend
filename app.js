@@ -872,6 +872,7 @@ app.post('/generate_minesweeper', authenticateJWT, onlySubscriber, (req, res) =>
     const { width, height, mines } = req.body;
 
     const minesweeper = generateMinefield(width, height, mines);
+    console.log(minesweeper)
     return res.status(200).json({ response: minesweeper });
 })
 
