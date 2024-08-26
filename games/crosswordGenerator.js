@@ -48,7 +48,7 @@ async function generateCluesAndAnswers(words) {
     // Map over the array to create the desired JSON structure
     const cluesAndAnswersArray = words.map((word, index) => ({
         clue: clues[index],  // Assign the corresponding clue
-        answer: word
+        answer: word.trim()
     }));
 
     return cluesAndAnswersArray;
@@ -56,15 +56,22 @@ async function generateCluesAndAnswers(words) {
 
 async function generateCrossword(words) {
     const cluesAndAnswers = await generateCluesAndAnswers(words);
-    console.log(cluesAndAnswers);
+
     const layout = clg.generateLayout(cluesAndAnswers);
+
+    // Adjust the start positions in layout.result from 1-based to 0-based
+    const adjustedResult = layout.result.map(word => ({
+        ...word,
+        startx: word.startx - 1, // Convert startx to 0-based index
+        starty: word.starty - 1  // Convert starty to 0-based index
+    }));
 
     return {
         rows: layout.rows,
         cols: layout.cols,
         table: layout.table, // 2D array representing the crossword grid
         outputHtml: layout.table_string, // Crossword as plain text (with HTML line breaks)
-        outputJson: layout.result // JSON containing words with their positions and orientations
+        outputJson: adjustedResult // JSON containing words with their positions and orientations
     };
 }
 

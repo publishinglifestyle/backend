@@ -27,7 +27,6 @@ const { generateWordSearch } = require('./games/wordsearchGenerator');
 const { generateHangman } = require('./games/hangmanGenerator');
 const { scrambleWords } = require('./games/wordScrumblerGenerator');
 const { generateCryptogram } = require('./games/cryptogramGenerator');
-const { generateMazeBase64 } = require('./games/mazeGenerator');
 const { generateMinefield } = require('./games/mineFinderGenerator');
 
 const app = express();
@@ -319,10 +318,10 @@ app.post('/sign_up', async (req, res) => {
         return res.status(400).json({ message: 'Passwords must be the same.' });
     }
 
-    const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/;
+    /*const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/;
     if (!passwordRegex.test(password)) {
         return res.status(400).json({ message: 'Password does not meet the required criteria.' });
-    }
+    }*/
 
     const result = await createUser(email, password, first_name, last_name);
 
@@ -649,11 +648,10 @@ app.post('/stripe/webhook', async (req, res) => {
     console.log("customer_id", customer_id);
     console.log("customer_email", customer_email);
 
-    const { data: user, error: user_error } = await getUserByEmail(customer_email);
-    const { data: current_subscription, error: current_subscription_error } = await subscriptions.getSubscriptionByPriceId(price_id);
     switch (eventType) {
         case 'invoice.paid':
-            console.log("Subscription paid");
+            const { data: user, error: user_error } = await getUserByEmail(customer_email);
+            const { data: current_subscription, error: current_subscription_error } = await subscriptions.getSubscriptionByPriceId(price_id);
             const { data: current_user_subscription, error: current_user_subscription_error } = await user_subscriptions.getSubscription(user.id);
             if (current_user_subscription) {
                 const new_credits = current_user_subscription.credits + current_subscription.credits;
@@ -665,13 +663,15 @@ app.post('/stripe/webhook', async (req, res) => {
                 const { data: subscription_result, error: subscription_error } = await user_subscriptions.createSubscription(subscription_id, customer_id, user.id, true, current_subscription.credits);
             }
 
+            console.log("Subscription paid");
             break;
-        case 'invoice.payment_failed':
-            console.log("Subscription not paid");
-            break;
-        case 'customer.subscription.deleted':
+        case 'invoice.payment_failed' || 'customer.subscription.deleted':
+            const { data: current_subscription_stripe, error: current_subscription_stripe_error } = await user_subscriptions.getSubscriptionByStripeCustomerId(customer_id);
+            console.log("current_subscription_stripe", current_subscription_stripe)
+            console.log("current_subscription_stripe_error", current_subscription_stripe_error)
+            if (current_subscription_stripe)
+                await user_subscriptions.deleteSubscription(current_subscription_stripe.id);
             console.log("Subscription canceled");
-            await user_subscriptions.updateSubscription(user.id, customer_id, false);
             break;
         default:
     }
@@ -815,8 +815,8 @@ app.post('/change_conversation_name', authenticateJWT, async (req, res) => {
 
 /********************* Games Management ***********/
 app.post('/generate_sudoku', authenticateJWT, onlySubscriber, (req, res) => {
-    const { difficulty } = req.body;
-    const sudoku = generateSudoku(difficulty);
+    const { difficulty, num_puzzles } = req.body;
+    const sudoku = generateSudoku(difficulty, num_puzzles);
     return res.status(200).json({ response: sudoku });
 })
 
@@ -827,17 +827,17 @@ app.post('/generate_crossword', authenticateJWT, onlySubscriber, async (req, res
     return res.status(200).json({ response: crossword });
 })
 
-app.post('/generate_nurikabe', authenticateJWT, onlySubscriber, async (req, res) => {
+/*app.post('/generate_nurikabe', authenticateJWT, onlySubscriber, async (req, res) => {
     const { size = 5 } = req.body;
 
     const puzzle = await generateNurikabe(size);
     return res.status(200).json({ response: puzzle });
-});
+});*/
 
 app.post('/generate_wordsearch', authenticateJWT, onlySubscriber, async (req, res) => {
-    const { words } = req.body;
-
-    const puzzle = generateWordSearch(words);
+    const { words, num_puzzles, backwards_probability } = req.body;
+    console.log("backwards_probability", backwards_probability)
+    const puzzle = await generateWordSearch(words, num_puzzles, backwards_probability);
     return res.status(200).json({ response: puzzle });
 })
 
@@ -861,18 +861,17 @@ app.post('/generate_cryptogram', authenticateJWT, onlySubscriber, async (req, re
     return res.status(200).json({ response: puzzle });
 })
 
-app.post('/generate_maze', authenticateJWT, onlySubscriber, async (req, res) => {
+/*app.post('/generate_maze', authenticateJWT, onlySubscriber, async (req, res) => {
     const { width, height, cell_size } = req.body;
 
-    const maze = await generateMazeBase64(width, height, cell_size);
+    const maze = await generateMazeWithSolutionBase64(width, height, cell_size);
     return res.status(200).json({ response: maze });
-})
+})*/
 
 app.post('/generate_minesweeper', authenticateJWT, onlySubscriber, (req, res) => {
-    const { width, height, mines } = req.body;
+    const { width, height, mines, num_puzzles } = req.body;
 
-    const minesweeper = generateMinefield(width, height, mines);
-    console.log(minesweeper)
+    const minesweeper = generateMinefield(width, height, mines, num_puzzles);
     return res.status(200).json({ response: minesweeper });
 })
 

@@ -74,11 +74,30 @@ async function getSubscription(user_id) {
     }
 }
 
+async function getSubscriptionByStripeCustomerId(customer_id) {
+    try {
+        const { data, error } = await supabase
+            .from('UserSubscriptions')
+            .select()
+            .match({ customer_id })
+            .single();
+
+        if (error) {
+            throw error;
+        }
+
+        return { data, error }
+    } catch (error) {
+        console.error('Failed to retrieve subscription:', error);
+        return { error }
+    }
+}
+
 async function deleteSubscription(subscription_id) {
     const { data, error } = await supabase
         .from('UserSubscriptions')
         .delete()
-        .match({ subscription_id: subscription_id });
+        .match({ id: subscription_id });
 
     return { data, error };
 }
@@ -88,5 +107,6 @@ module.exports = {
     updateSubscription,
     getSubscription,
     deleteSubscription,
-    updateCredits
+    updateCredits,
+    getSubscriptionByStripeCustomerId
 }

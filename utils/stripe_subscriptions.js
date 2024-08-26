@@ -13,10 +13,19 @@ async function createSession(email, price_id) {
         discounts: [
             {
                 coupon: 'AcelvjAW',
+                //coupon: 'CJghsOBc'
             },
         ],
         customer_email: email,
-        success_url: process.env.FRONTEND_URL + 'chat?session_id={CHECKOUT_SESSION_ID}'
+        success_url: process.env.FRONTEND_URL + 'chat?session_id={CHECKOUT_SESSION_ID}',
+        subscription_data: {
+            trial_settings: {
+                end_behavior: {
+                    missing_payment_method: 'cancel',
+                },
+            },
+            trial_period_days: 2,
+        },
     });
 
     return session.url
