@@ -22,7 +22,7 @@ async function generateMissingWords(words, additionalCount) {
 
     const response = await openai.chat.completions.create({
         messages: context,
-        model: 'gpt-4'
+        model: 'gpt-4o'
     });
 
     let output = response.choices[0].message.content;
@@ -41,13 +41,7 @@ async function generateWordSearch(words, num_puzzles = 1, invert_words = 0) {
     let totalWords = words.length;
     const wordsPerPuzzle = Math.ceil(totalWords / num_puzzles);
 
-    // Adjust the number of words if too many for the given number of puzzles
-    if (totalWords > num_puzzles * wordsPerPuzzle) {
-        totalWords = num_puzzles * wordsPerPuzzle;
-        words = words.slice(0, totalWords);
-    }
-
-    // If words are not enough to fill all puzzles evenly, generate more
+    // Check if words can be evenly distributed across puzzles
     if (totalWords % num_puzzles !== 0) {
         const additionalWordsNeeded = num_puzzles * wordsPerPuzzle - totalWords;
         const additionalWords = await generateMissingWords(words, additionalWordsNeeded);
@@ -59,8 +53,8 @@ async function generateWordSearch(words, num_puzzles = 1, invert_words = 0) {
         const wordsForCurrentPuzzle = words.slice(i * wordsPerPuzzle, (i + 1) * wordsPerPuzzle);
 
         const options = {
-            //cols: gridSize,
-            //rows: gridSize,
+            cols: 25,
+            rows: 25,
             dictionary: wordsForCurrentPuzzle,
             maxWords: wordsPerPuzzle,
             backwardsProbability: invert_words, // Probability to invert words
@@ -81,7 +75,7 @@ async function generateWordSearch(words, num_puzzles = 1, invert_words = 0) {
         // Convert the grid to a string representation
         const puzzleString = ws.grid.map(row => row.join('')).join('\n');
 
-        console.log(ws.grid)
+        console.log(ws.grid);
         puzzles.push({
             puzzle: puzzleString,
             grid: ws.grid,
@@ -93,4 +87,3 @@ async function generateWordSearch(words, num_puzzles = 1, invert_words = 0) {
 }
 
 module.exports = { generateWordSearch };
-

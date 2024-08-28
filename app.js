@@ -821,8 +821,8 @@ app.post('/generate_sudoku', authenticateJWT, onlySubscriber, (req, res) => {
 })
 
 app.post('/generate_crossword', authenticateJWT, onlySubscriber, async (req, res) => {
-    const { words } = req.body;
-    const crossword = await generateCrossword(words);
+    const { words, words_per_puzzle, num_puzzles } = req.body;
+    const crossword = await generateCrossword(words, words_per_puzzle, num_puzzles);
 
     return res.status(200).json({ response: crossword });
 })
