@@ -35,6 +35,29 @@ async function generateMissingWords(words, additionalCount) {
     return additionalWords;
 }
 
+// Function to fill empty cells with random letters and mark them as should_be_empty
+function fillEmptyCellsWithRandomLetters(grid) {
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    const filledGrid = [];  // To store the grid with additional metadata
+
+    for (let row = 0; row < grid.length; row++) {
+        const newRow = [];
+        for (let col = 0; col < grid[row].length; col++) {
+            const cell = grid[row][col];
+            if (cell === ' ' || cell === '') {
+                // Assign a random letter to the empty cell
+                const randomLetter = alphabet[Math.floor(Math.random() * alphabet.length)];
+                newRow.push({ letter: randomLetter, should_be_empty: true });
+            } else {
+                newRow.push({ letter: cell, should_be_empty: false });
+            }
+        }
+        filledGrid.push(newRow);
+    }
+
+    return filledGrid;
+}
+
 // Main function to generate word search puzzles
 async function generateWordSearch(words, num_puzzles = 1, invert_words = 0) {
     const puzzles = [];
@@ -57,29 +80,22 @@ async function generateWordSearch(words, num_puzzles = 1, invert_words = 0) {
             rows: 25,
             dictionary: wordsForCurrentPuzzle,
             maxWords: wordsPerPuzzle,
-            backwardsProbability: invert_words, // Probability to invert words
+            backwardsProbability: invert_words,
             upperCase: true,
-            diacritics: false,
-            maxRetries: 10 // Retry count for better placement
+            diacritics: true
         };
 
         const ws = new WordSearch(options);
 
-        // Ensure the words were placed correctly
-        const insertedWords = ws.words.map(wordInfo => ({
-            word: wordInfo.word,
-            clean: wordInfo.clean.trim().toUpperCase(),
-            path: wordInfo.path
-        }));
+        // Fill empty cells with random letters and mark them with should_be_empty
+        const filledGrid = fillEmptyCellsWithRandomLetters(ws.grid);
 
-        // Convert the grid to a string representation
-        const puzzleString = ws.grid.map(row => row.join('')).join('\n');
+        // Log the generated grid for visual debugging
+        console.log(ws.words);
 
-        console.log(ws.grid);
         puzzles.push({
-            puzzle: puzzleString,
-            grid: ws.grid,
-            words: insertedWords
+            grid: filledGrid,
+            words: ws.words
         });
     }
 

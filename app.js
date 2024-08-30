@@ -821,11 +821,23 @@ app.post('/generate_sudoku', authenticateJWT, onlySubscriber, (req, res) => {
 })
 
 app.post('/generate_crossword', authenticateJWT, onlySubscriber, async (req, res) => {
-    const { words, words_per_puzzle, num_puzzles } = req.body;
-    const crossword = await generateCrossword(words, words_per_puzzle, num_puzzles);
+    const { words, clues, words_per_puzzle, num_puzzles } = req.body;
 
-    return res.status(200).json({ response: crossword });
-})
+    try {
+        const crossword = await generateCrossword(words, clues, words_per_puzzle, num_puzzles);
+
+        // Check if the response contains an error
+        if (crossword.error) {
+            return res.status(400).json({ error: crossword.error });
+        }
+
+        return res.status(200).json({ response: crossword });
+    } catch (error) {
+        console.error("Unexpected error:", error);
+        return res.status(500).json({ error: "An unexpected error occurred." });
+    }
+});
+
 
 /*app.post('/generate_nurikabe', authenticateJWT, onlySubscriber, async (req, res) => {
     const { size = 5 } = req.body;
