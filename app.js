@@ -15,7 +15,7 @@ const { upload, download, downloadAndConvert, listImages, deleteImages } = requi
 const { calculate_tokens } = require('./utils/tokenizer');
 const subscriptions = require('./database/subscriptions');
 const user_subscriptions = require('./database/user_subscriptions');
-const stripe_subscriptions = require('./utils/stripe_subscriptions');
+const stripe_manager = require('./utils/stripe_manager');
 const { createAgent, updateAgent, getAgentById, getAgentsPerLevel, getAllAgents, deleteAgent } = require('./database/agents');
 const { createConversation, updateConversation, getConversationsByUserId, getConversation, deleteConversation, updateSystemContext } = require('./database/conversations');
 const { sendResetPasswordEmail } = require('./utils/sendgrid');
@@ -61,6 +61,7 @@ const io = socketIo(server, {
 
 const ongoingMessageIds = new Map();
 const starting_prompt = "You are a helpful assistant";
+const GAME_CREDITS = 1000;
 
 io.on('connection', (socket) => {
     console.log("New connection: ", socket.id);
@@ -90,7 +91,7 @@ async function generateConversationTitle(user_message) {
     ];
     const response = await openai.chat.completions.create({
         messages: context,
-        model: 'gpt-4o-mini',
+        model: 'gpt-4o',
         temperature: 0,
     });
 
@@ -284,7 +285,7 @@ async function reply(user_id, msg, agent_id, conversation_id, socketId) {
             'Authorization': `Bearer ${process.env.OPEN_AI_KEY}`
         };
         const data = {
-            model: 'gpt-4o-mini',
+            model: 'gpt-4o',
             messages: context,
             temperature: temperature,
             stream: true
@@ -637,6 +638,7 @@ app.post('/stripe/webhook', async (req, res) => {
     let eventType = req.body.type;
 
     console.log("eventType", eventType);
+    console.log("data", data);
 
     const subscription_id = data.object.subscription;
     const customer_id = data.object.customer;
@@ -649,7 +651,21 @@ app.post('/stripe/webhook', async (req, res) => {
     console.log("customer_email", customer_email);
 
     switch (eventType) {
+        case 'checkout.session.completed':
+            if (data.object.metadata && data.object.metadata.credits) {
+                console.log("buy credits");
+                const { data: user, error: user_error } = await getUserByEmail(customer_email);
+                if (!user_error) {
+                    const { data: subscription } = await user_subscriptions.getSubscription(user.id);
+                    await user_subscriptions.updateCredits(user.id, subscription.credits + parseInt(data.object.metadata.credits));
+                    console.log(`Added ${data.object.metadata.credits} credits to user ${user.id}`);
+                } else {
+                    console.error("User not found or error occurred:", user_error);
+                }
+            }
+            break
         case 'invoice.paid':
+
             const { data: user, error: user_error } = await getUserByEmail(customer_email);
             const { data: current_subscription, error: current_subscription_error } = await subscriptions.getSubscriptionByPriceId(price_id);
             const { data: current_user_subscription, error: current_user_subscription_error } = await user_subscriptions.getSubscription(user.id);
@@ -664,6 +680,8 @@ app.post('/stripe/webhook', async (req, res) => {
             }
 
             console.log("Subscription paid");
+
+
             break;
         case 'invoice.payment_failed' || 'customer.subscription.deleted':
             const { data: current_subscription_stripe, error: current_subscription_stripe_error } = await user_subscriptions.getSubscriptionByStripeCustomerId(customer_id);
@@ -693,13 +711,13 @@ app.post('/start_subscription', authenticateJWT, async (req, res) => {
         return res.status(500).json({ error: 'Error assigning subscription' });
     }
 
-    const url = await stripe_subscriptions.createSession(user.email, price_id);
+    const url = await stripe_manager.createSession(user.email, price_id);
     res.json({ response: url });
 });
 
 app.get('/get_stripe_portal', authenticateJWT, async (req, res) => {
     const { data: subscription, error: subscription_error } = await user_subscriptions.getSubscription(req.userId);
-    const url = await stripe_subscriptions.createPortal(subscription.customer_id);
+    const url = await stripe_manager.createPortal(subscription.customer_id);
 
     res.json({ response: url });
 });
@@ -814,8 +832,15 @@ app.post('/change_conversation_name', authenticateJWT, async (req, res) => {
 })
 
 /********************* Games Management ***********/
-app.post('/generate_sudoku', authenticateJWT, onlySubscriber, (req, res) => {
+app.post('/generate_sudoku', authenticateJWT, onlySubscriber, async (req, res) => {
     const { difficulty, num_puzzles } = req.body;
+
+    const { data: subscription } = await user_subscriptions.getSubscription(req.userId);
+    if (subscription.credits >= GAME_CREDITS)
+        await user_subscriptions.updateCredits(req.userId, subscription.credits - GAME_CREDITS);
+    else
+        return res.status(200).json({ error: 'You need to purchase more credits to continue using the service.' });
+
     const sudoku = generateSudoku(difficulty, num_puzzles);
     return res.status(200).json({ response: sudoku });
 })
@@ -824,6 +849,12 @@ app.post('/generate_crossword', authenticateJWT, onlySubscriber, async (req, res
     const { words, clues, words_per_puzzle, num_puzzles } = req.body;
 
     try {
+        const { data: subscription } = await user_subscriptions.getSubscription(req.userId);
+        if (subscription.credits >= GAME_CREDITS)
+            await user_subscriptions.updateCredits(req.userId, subscription.credits - GAME_CREDITS);
+        else
+            return res.status(200).json({ error: 'You need to purchase more credits to continue using the service.' });
+
         const crossword = await generateCrossword(words, clues, words_per_puzzle, num_puzzles);
 
         // Check if the response contains an error
@@ -848,19 +879,38 @@ app.post('/generate_crossword', authenticateJWT, onlySubscriber, async (req, res
 
 app.post('/generate_wordsearch', authenticateJWT, onlySubscriber, async (req, res) => {
     const { words, num_puzzles, backwards_probability } = req.body;
-    console.log("backwards_probability", backwards_probability)
+
+    const { data: subscription } = await user_subscriptions.getSubscription(req.userId);
+    if (subscription.credits >= GAME_CREDITS)
+        await user_subscriptions.updateCredits(req.userId, subscription.credits - GAME_CREDITS);
+    else
+        return res.status(200).json({ error: 'You need to purchase more credits to continue using the service.' });
+
     const puzzle = await generateWordSearch(words, num_puzzles, backwards_probability);
     return res.status(200).json({ response: puzzle });
 })
 
 app.post('/generate_hangman', authenticateJWT, onlySubscriber, async (req, res) => {
     const { words } = req.body;
+
+    const { data: subscription } = await user_subscriptions.getSubscription(req.userId);
+    if (subscription.credits >= GAME_CREDITS)
+        await user_subscriptions.updateCredits(req.userId, subscription.credits - GAME_CREDITS);
+    else
+        return res.status(200).json({ error: 'You need to purchase more credits to continue using the service.' });
+
     const puzzle = generateHangman(words);
     return res.status(200).json({ response: puzzle });
 })
 
 app.post('/scramble_word', authenticateJWT, onlySubscriber, async (req, res) => {
     const { words } = req.body;
+
+    const { data: subscription } = await user_subscriptions.getSubscription(req.userId);
+    if (subscription.credits >= GAME_CREDITS)
+        await user_subscriptions.updateCredits(req.userId, subscription.credits - GAME_CREDITS);
+    else
+        return res.status(200).json({ error: 'You need to purchase more credits to continue using the service.' });
 
     const scrambled = scrambleWords(words);
     return res.status(200).json({ response: scrambled });
@@ -869,22 +919,44 @@ app.post('/scramble_word', authenticateJWT, onlySubscriber, async (req, res) => 
 app.post('/generate_cryptogram', authenticateJWT, onlySubscriber, async (req, res) => {
     const { phrases } = req.body;
 
+    const { data: subscription } = await user_subscriptions.getSubscription(req.userId);
+    if (subscription.credits >= GAME_CREDITS)
+        await user_subscriptions.updateCredits(req.userId, subscription.credits - GAME_CREDITS);
+    else
+        return res.status(200).json({ error: 'You need to purchase more credits to continue using the service.' });
+
     const puzzle = generateCryptogram(phrases);
     return res.status(200).json({ response: puzzle });
 })
 
-/*app.post('/generate_maze', authenticateJWT, onlySubscriber, async (req, res) => {
-    const { width, height, cell_size } = req.body;
+app.get('/generate_maze', authenticateJWT, onlySubscriber, async (req, res) => {
+    const { data: subscription } = await user_subscriptions.getSubscription(req.userId);
+    if (subscription.credits >= GAME_CREDITS * 10) {
+        await user_subscriptions.updateCredits(req.userId, subscription.credits - (GAME_CREDITS * 10));
+        return res.status(200).json({ allowed: true });
+    } else
+        return res.status(200).json({ allowed: false, error: 'You need to purchase more credits to continue using the service.' });
+})
 
-    const maze = await generateMazeWithSolutionBase64(width, height, cell_size);
-    return res.status(200).json({ response: maze });
-})*/
-
-app.post('/generate_minesweeper', authenticateJWT, onlySubscriber, (req, res) => {
+app.post('/generate_minesweeper', authenticateJWT, onlySubscriber, async (req, res) => {
     const { width, height, mines, num_puzzles } = req.body;
+
+    const { data: subscription } = await user_subscriptions.getSubscription(req.userId);
+    if (subscription.credits >= GAME_CREDITS)
+        await user_subscriptions.updateCredits(req.userId, subscription.credits - GAME_CREDITS);
+    else
+        return res.status(200).json({ error: 'You need to purchase more credits to continue using the service.' });
 
     const minesweeper = generateMinefield(width, height, mines, num_puzzles);
     return res.status(200).json({ response: minesweeper });
+})
+
+/* Credits Management */
+app.post('/purchase_credits', authenticateJWT, async (req, res) => {
+    const { package_number } = req.body;
+    const { data: user } = await getUserById(req.userId);
+    const url = await stripe_manager.buyCredits(package_number, user.email);
+    res.json({ response: url });
 })
 
 /* Utils */
