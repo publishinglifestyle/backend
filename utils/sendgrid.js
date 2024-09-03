@@ -8,7 +8,7 @@ const SENDER_EMAIL = process.env.SENDER_EMAIL || "your-email@example.com";
 async function sendResetPasswordEmail(to, token) {
     try {
         // Read the HTML content from the file
-        let html = await fs.readFile(path.join(__dirname, 'emails', 'reset_password.html'), 'utf8');
+        let html = await fs.readFile(path.join(__dirname, '../emails', 'reset_password.html'), 'utf8');
 
         // Replace the placeholder with the actual reset link
         const resetLink = `https://lowcontent.ai/reset_password?resetToken=${token}`;

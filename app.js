@@ -28,6 +28,7 @@ const { generateHangman } = require('./games/hangmanGenerator');
 const { scrambleWords } = require('./games/wordScrumblerGenerator');
 const { generateCryptogram } = require('./games/cryptogramGenerator');
 const { generateMinefield } = require('./games/mineFinderGenerator');
+const { webSearch } = require('./utils/serp');
 
 const app = express();
 const compression = require('compression');
@@ -137,6 +138,7 @@ async function translatePrompt(user_message) {
 }
 
 const handleStream = (response, user, user_id, subscription, socketId, messageId, conversation_id, conversation_name, context, user_tokens) => {
+    context.pop();
     return new Promise((resolve, reject) => {
         let fullMessage = '';
         let ai_tokens = 0;
@@ -219,6 +221,9 @@ const handleStream = (response, user, user_id, subscription, socketId, messageId
     });
 };
 
+const availableTools = {
+    webSearch
+};
 
 async function reply(user_id, msg, agent_id, conversation_id, socketId) {
     console.log("Processing message for user:", user_id);
@@ -284,6 +289,46 @@ async function reply(user_id, msg, agent_id, conversation_id, socketId) {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${process.env.OPEN_AI_KEY}`
         };
+
+        const agent_response = await openai.chat.completions.create({
+            model: "gpt-4o",
+            messages: [{ role: 'user', content: msg }],
+            tools: [
+                {
+                    type: "function",
+                    function: {
+                        name: "webSearch",
+                        description: "Search the web for information if the user asks specifically to browse the web",
+                        parameters: {
+                            type: "object",
+                            properties: {
+                                user_message: { type: "string" }
+                            },
+                            required: ["user_message"],
+                        },
+                    }
+                }
+            ],
+        });
+        console.log("agent_response", agent_response)
+        const { finish_reason, message: agent_message } = agent_response.choices[0];
+        if (finish_reason === "tool_calls" && agent_message.tool_calls) {
+            const functionName = agent_message.tool_calls[0].function.name;
+            const functionToCall = availableTools[functionName];
+            const functionArgs = JSON.parse(agent_message.tool_calls[0].function.arguments);
+            const functionArgsArr = Object.values(functionArgs);
+
+            const functionResponse = await functionToCall.apply(null, functionArgsArr);
+            context.push({
+                role: "function",
+                name: functionName,
+                content: `The result of the last function was this: ${JSON.stringify(
+                    functionResponse
+                )}
+                        `,
+            });
+        }
+
         const data = {
             model: 'gpt-4o',
             messages: context,
@@ -423,10 +468,10 @@ app.post('/reset_password', async (req, res) => {
         return res.status(400).json({ response: "New passwords do not match" });
     }
 
-    const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/;
+    /*const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/;
     if (!passwordRegex.test(password_1)) {
         return res.status(400).send({ 'message': 'Password does not meet the required criteria.' });
-    }
+    }*/
 
     const result = await resetUserPassword(token, password_1);
     res.json({ response: result });
