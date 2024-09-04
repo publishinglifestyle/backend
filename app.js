@@ -7,6 +7,7 @@ const bodyParser = require('body-parser');
 const axios = require('axios');
 const cron = require('node-cron');
 const cors = require('cors');
+const multer = require('multer');
 const OpenAI = require('openai');
 const openai = new OpenAI({ apiKey: process.env.OPEN_AI_KEY });
 
@@ -29,10 +30,13 @@ const { scrambleWords } = require('./games/wordScrumblerGenerator');
 const { generateCryptogram } = require('./games/cryptogramGenerator');
 const { generateMinefield } = require('./games/mineFinderGenerator');
 const { webSearch } = require('./utils/serp');
+const { createThread, createMessage, checkStatus, retrieveMessage } = require('./dialog')
+
 
 const app = express();
 const compression = require('compression');
 app.use(compression());
+const multer_upload = multer();
 
 
 app.use((req, res, next) => {
@@ -1002,6 +1006,43 @@ app.post('/purchase_credits', authenticateJWT, async (req, res) => {
     const { data: user } = await getUserById(req.userId);
     const url = await stripe_manager.buyCredits(package_number, user.email);
     res.json({ response: url });
+})
+
+/* Chat Assistant Management */
+app.get('/start_conversation', async (req, res) => {
+    const thread_id = await createThread()
+    res.status(200).json({ thread_id: thread_id })
+})
+
+app.post('/retrieve_message', multer_upload.none(), async (req, res) => {
+    if (!req.body.thread_id) {
+        return res.status(404).json({ error: 'Missing thread_id paramater' })
+    }
+
+    const message = await retrieveMessage(req.body.thread_id)
+    res.status(200).json({ message: message })
+})
+
+app.post('/check_status', multer_upload.none(), async (req, res) => {
+    const { thread_id, run_id } = req.body
+    if (!thread_id || !run_id) {
+        return res.status(404).json({ error: 'Missing paramaters' })
+    }
+
+    const status = await checkStatus(thread_id, run_id)
+    console.log("status", status)
+    res.status(200).json({ status: status })
+})
+
+app.post('/new_message', multer_upload.none(), async (req, res) => {
+    const { thread_id, message } = req.body
+
+    if (!thread_id || !message) {
+        return res.status(404).json({ error: 'Missing paramaters' })
+    }
+
+    const run_id = await createMessage(thread_id, message)
+    res.status(200).json({ run_id: run_id })
 })
 
 /* Utils */
