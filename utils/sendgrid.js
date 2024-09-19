@@ -30,6 +30,28 @@ async function sendResetPasswordEmail(to, token) {
     }
 }
 
+async function sendActivateSubscriptionEmail(to) {
+    try {
+        // Read the HTML content from the file
+        let html = await fs.readFile(path.join(__dirname, '../emails', 'activate_subscription.html'), 'utf8');
+
+        const msg = {
+            to: to,
+            from: SENDER_EMAIL,
+            subject: 'Azione Richiesta: Aggiorna il Tuo Abbonamento',
+            html: html
+        };
+
+        await sgMail.send(msg);
+        console.log('Activate subscription email sent');
+        return { success: true };
+    } catch (error) {
+        console.error('Error sending activate subscription email:', error);
+        return { success: false, error: error.message };
+    }
+}
+
 module.exports = {
-    sendResetPasswordEmail
+    sendResetPasswordEmail,
+    sendActivateSubscriptionEmail
 };

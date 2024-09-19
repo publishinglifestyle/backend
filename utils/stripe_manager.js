@@ -30,11 +30,12 @@ async function createSession(email, price_id) {
         ],
         discounts: [
             {
-                coupon: 'bMKfHimo',
+                coupon: 'uJ3EF19M',
                 //coupon: 'CJghsOBc'
             },
         ],
         customer_email: email,
+        billing_address_collection: 'required',
         success_url: process.env.FRONTEND_URL + 'chat?session_id={CHECKOUT_SESSION_ID}',
         subscription_data: {
             trial_settings: {
@@ -75,6 +76,7 @@ async function buyCredits(package_number, email) {
             },
         ],
         customer_email: email,
+        billing_address_collection: 'required',
         success_url: process.env.FRONTEND_URL + 'profile?session_id={CHECKOUT_SESSION_ID}',
         metadata: {
             credits: creditPackage.credits

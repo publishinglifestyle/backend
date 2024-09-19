@@ -209,6 +209,39 @@ const resetUserPassword = async (token, newPassword) => {
     }
 }
 
+async function findUsersWithoutSubscription() {
+    try {
+        // First, fetch all users from the Users table
+        const { data: allUsers, error: usersError } = await supabase
+            .from('Users')
+            .select('id, first_name, last_name, email');
+
+        if (usersError) {
+            throw usersError;
+        }
+
+        // Then, fetch all user_ids from the UserSubscriptions table
+        const { data: subscribedUsers, error: subscriptionsError } = await supabase
+            .from('UserSubscriptions')
+            .select('user_id');
+
+        if (subscriptionsError) {
+            throw subscriptionsError;
+        }
+
+        // Get a set of subscribed user IDs
+        const subscribedUserIds = new Set(subscribedUsers.map(sub => sub.user_id));
+
+        // Filter out users who are not in the subscribedUserIds set
+        const usersWithoutSubscription = allUsers.filter(user => !subscribedUserIds.has(user.id));
+
+        return { data: usersWithoutSubscription, error: null };
+    } catch (error) {
+        console.error('Error finding users without subscription:', error.message);
+        return { error: error.message };
+    }
+}
+
 
 module.exports = {
     createUser,
@@ -218,5 +251,6 @@ module.exports = {
     updateUser,
     resetPassword,
     initiatePasswordReset,
-    resetUserPassword
+    resetUserPassword,
+    findUsersWithoutSubscription
 };

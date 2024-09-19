@@ -11,7 +11,7 @@ const multer = require('multer');
 const OpenAI = require('openai');
 const openai = new OpenAI({ apiKey: process.env.OPEN_AI_KEY });
 
-const { createUser, login, getUserById, getUserByEmail, updateUser, resetPassword, initiatePasswordReset, resetUserPassword } = require('./database/users');
+const { createUser, login, getUserById, getUserByEmail, updateUser, resetPassword, initiatePasswordReset, resetUserPassword, findUsersWithoutSubscription } = require('./database/users');
 const { upload, download, downloadAndConvert, listImages, deleteImages } = require('./database/images');
 const { calculate_tokens } = require('./utils/tokenizer');
 const subscriptions = require('./database/subscriptions');
@@ -19,7 +19,7 @@ const user_subscriptions = require('./database/user_subscriptions');
 const stripe_manager = require('./utils/stripe_manager');
 const { createAgent, updateAgent, getAgentById, getAgentsPerLevel, getAllAgents, deleteAgent } = require('./database/agents');
 const { createConversation, updateConversation, getConversationsByUserId, getConversation, deleteConversation, updateSystemContext } = require('./database/conversations');
-const { sendResetPasswordEmail } = require('./utils/sendgrid');
+const { sendResetPasswordEmail, sendActivateSubscriptionEmail } = require('./utils/sendgrid');
 const { generateImage, checkImageStatus, pressButton } = require('./utils/midjourney');
 const { generateSudoku } = require('./games/sudokuGenerator');
 const { generateCrossword } = require('./games/crosswordGenerator');
@@ -368,19 +368,7 @@ app.post('/sign_up', async (req, res) => {
         return res.status(400).json({ message: 'Passwords must be the same.' });
     }
 
-    /*const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/;
-    if (!passwordRegex.test(password)) {
-        return res.status(400).json({ message: 'Password does not meet the required criteria.' });
-    }*/
-
-    const result = await createUser(email, password, first_name, last_name);
-
-    /*if (result.error) {
-        if (result.error.message.includes('already exists')) {
-            return res.status(409).json({ message: result.error.message });
-        }
-        return res.status(500).json({ message: result.error.message });
-    }*/
+    await createUser(email, password, first_name, last_name);
 
     const { token, error, code, response } = await login(email, password);
     res.status(201).json({ message: 'User created successfully.', token: token });
@@ -472,11 +460,6 @@ app.post('/reset_password', async (req, res) => {
         return res.status(400).json({ response: "New passwords do not match" });
     }
 
-    /*const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/;
-    if (!passwordRegex.test(password_1)) {
-        return res.status(400).send({ 'message': 'Password does not meet the required criteria.' });
-    }*/
-
     const result = await resetUserPassword(token, password_1);
     res.json({ response: result });
 });
@@ -527,6 +510,14 @@ app.get('/get_profile_pic', authenticateJWT, async (req, res) => {
     res.setHeader('Content-Type', data.type);
     res.setHeader('Content-Length', buffer.length);
     res.send(buffer);
+});
+
+app.get('/find_users_without_subscription', authenticateJWT, onlyOwner, async (req, res) => {
+    const { data, error } = await findUsersWithoutSubscription();
+    for (let user of data) {
+        await sendActivateSubscriptionEmail(user.email);
+    }
+    return res.status(200).json({ response: data });
 });
 
 /********************* Image Generation ***********/
@@ -705,8 +696,7 @@ app.post('/stripe/webhook', async (req, res) => {
                 console.log("buy credits");
                 const { data: user, error: user_error } = await getUserByEmail(customer_email);
                 if (!user_error) {
-                    const { data: subscription } = await user_subscriptions.getSubscription(user.id);
-                    await user_subscriptions.updateCredits(user.id, subscription.credits + parseInt(data.object.metadata.credits));
+                    await user_subscriptions.updateCredits(user.id, parseInt(data.object.metadata.credits));
                     console.log(`Added ${data.object.metadata.credits} credits to user ${user.id}`);
                 } else {
                     console.error("User not found or error occurred:", user_error);
@@ -719,8 +709,7 @@ app.post('/stripe/webhook', async (req, res) => {
             const { data: current_subscription, error: current_subscription_error } = await subscriptions.getSubscriptionByPriceId(price_id);
             const { data: current_user_subscription, error: current_user_subscription_error } = await user_subscriptions.getSubscription(user.id);
             if (current_user_subscription) {
-                const new_credits = current_user_subscription.credits + current_subscription.credits;
-                await user_subscriptions.updateSubscription(user.id, customer_id, true, new_credits);
+                await user_subscriptions.updateSubscription(user.id, customer_id, true, current_subscription.credits);
                 console.log("customer_id", customer_id);
                 console.log("current_user_subscription", current_user_subscription);
 
@@ -1123,3 +1112,13 @@ const remove_images = async () => {
 
 // Schedule the cron job to run every hour
 cron.schedule('0 * * * *', remove_images);
+
+// Schedule the cron job to run every week (e.g., every Sunday at 00:00)
+cron.schedule('0 0 * * 0', async () => {
+    console.log("Sending email to users without subscription...");
+    const { data, error } = await findUsersWithoutSubscription();
+    for (let user of data) {
+        await sendActivateSubscriptionEmail(user.email);
+        console.log("Email sent to:", user.email);
+    }
+});
