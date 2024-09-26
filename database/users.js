@@ -6,7 +6,7 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_API
 
 async function createUser(email, password, first_name, last_name) {
     // Hash the password
-    const hashedPassword = await bcrypt.hash(password, 10);
+    const hashedPassword = password ? await bcrypt.hash(password, 10) : '';
 
     try {
         const { data, error } = await supabase
@@ -15,6 +15,7 @@ async function createUser(email, password, first_name, last_name) {
                 { first_name: first_name, last_name: last_name, email: email, password: hashedPassword, role: 'user' },
             ])
             .select()
+            .single();
 
         if (error) {
             throw error;

@@ -1130,6 +1130,51 @@ app.post('/new_message', multer_upload.none(), async (req, res) => {
     res.status(200).json({ run_id: run_id })
 })
 
+/* Google */
+app.post('/sign_up_google', async (req, res) => {
+    let email
+    const accessToken = req.body.access_token;
+
+    if (!accessToken) {
+        return res.status(400).send({ message: "access_token is required" });
+    }
+
+    try {
+        // Fetching user info using the access token
+        const googleResponse = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+            headers: {
+                Authorization: `Bearer ${accessToken}`,
+            },
+        });
+
+        if (!googleResponse.ok) {
+            throw new Error('Failed to fetch user info from Google');
+        }
+
+        const payload = await googleResponse.json();
+        email = payload.email
+        console.log(payload)
+
+        const { data: user, error: user_error } = await getUserByEmail(email);
+        if (user && req.body.req_type == 'login') {
+            // Generate JWT
+            const token = jwt.sign({ id: user.id }, process.env.SECRET, { expiresIn: '24h' });
+            res.status(200).json({ token })
+        } else if (req.body.req_type == 'sign_up') {
+            const { data: new_user, error: new_user_error } = await createUser(email, null, payload.given_name, payload.family_name);
+            const token = jwt.sign({ id: new_user.id }, process.env.SECRET, { expiresIn: '24h' });
+            res.status(200).json({ token })
+        } else {
+            console.log("User not found")
+            res.status(500).json({ response: 'User not found' });
+        }
+
+    } catch (error) {
+        console.error('Error:', error.response ? error.response.data : error.message);
+        return res.status(500).json({ response: error.message });
+    }
+});
+
 /* Utils */
 app.post('/add_mj_user', async (req, res) => {
     const { user_id } = req.body;
@@ -1221,10 +1266,15 @@ const remove_images = async () => {
 // Schedule the cron job to run every hour
 cron.schedule('0 * * * *', remove_images);
 
-// Schedule the cron job to run every week (e.g., every Sunday at 00:00)
-cron.schedule('0 0 * * 0', async () => {
+// Schedule the cron job to run every Monday, Wednesday, and Friday at 00:00
+cron.schedule('0 0 * * 1,3,5', async () => {
     console.log("Sending email to users without subscription...");
     const { data, error } = await findUsersWithoutSubscription();
+    if (error) {
+        console.error("Error finding users without subscription:", error);
+        return;
+    }
+
     for (let user of data) {
         await sendActivateSubscriptionEmail(user.email);
         console.log("Email sent to:", user.email);
