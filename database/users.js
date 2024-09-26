@@ -70,7 +70,7 @@ async function getUserById(user_id) {
         // Fetch user data
         const { data: userData, error: userError } = await supabase
             .from('Users')
-            .select("id, first_name, last_name, email, role, price_id")
+            .select("id, first_name, last_name, email, role, price_id, mj_auth_token")
             .eq('id', user_id)
             .single();
 
@@ -135,8 +135,6 @@ async function updateUser(user_id, first_name, last_name, email) {
 
     return { data, error };
 }
-
-
 
 async function resetPassword(user_id, newPassword) {
     try {
@@ -242,6 +240,15 @@ async function findUsersWithoutSubscription() {
     }
 }
 
+async function updateUserMjAuthToken(user_id, mj_auth_token) {
+    const { data, error } = await supabase
+        .from('Users')
+        .update({ mj_auth_token })
+        .select()
+        .match({ id: user_id });
+
+    return { data, error };
+}
 
 module.exports = {
     createUser,
@@ -252,5 +259,6 @@ module.exports = {
     resetPassword,
     initiatePasswordReset,
     resetUserPassword,
-    findUsersWithoutSubscription
+    findUsersWithoutSubscription,
+    updateUserMjAuthToken
 };

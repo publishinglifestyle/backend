@@ -11,19 +11,37 @@ const multer = require('multer');
 const OpenAI = require('openai');
 const openai = new OpenAI({ apiKey: process.env.OPEN_AI_KEY });
 
-const { createUser, login, getUserById, getUserByEmail, updateUser, resetPassword, initiatePasswordReset, resetUserPassword, findUsersWithoutSubscription } = require('./database/users');
+const {
+    createUser,
+    login,
+    getUserById,
+    getUserByEmail,
+    updateUser,
+    resetPassword,
+    initiatePasswordReset,
+    resetUserPassword,
+    findUsersWithoutSubscription,
+    updateUserMjAuthToken
+} = require('./database/users');
 const { upload, download, downloadAndConvert, listImages, deleteImages } = require('./database/images');
 const { calculate_tokens } = require('./utils/tokenizer');
 const subscriptions = require('./database/subscriptions');
 const user_subscriptions = require('./database/user_subscriptions');
 const stripe_manager = require('./utils/stripe_manager');
 const { createAgent, updateAgent, getAgentById, getAgentsPerLevel, getAllAgents, deleteAgent } = require('./database/agents');
-const { createConversation, updateConversation, getConversationsByUserId, getConversation, deleteConversation, updateSystemContext } = require('./database/conversations');
+const {
+    createConversation,
+    updateConversation,
+    getConversationsByUserId,
+    getConversation,
+    deleteConversation,
+    updateSystemContext
+} = require('./database/conversations');
 const { sendResetPasswordEmail, sendActivateSubscriptionEmail } = require('./utils/sendgrid');
-const { generateImage, checkImageStatus, pressButton } = require('./utils/midjourney');
+const { generateImage, sendAction, signUpMjUser } = require('./utils/midjourney');
 const { generateSudoku } = require('./games/sudokuGenerator');
 const { generateCrossword } = require('./games/crosswordGenerator');
-const { generateNurikabe } = require('./games/nurikabeGenerator');
+//const { generateNurikabe } = require('./games/nurikabeGenerator');
 const { generateWordSearch } = require('./games/wordsearchGenerator');
 const { generateHangman } = require('./games/hangmanGenerator');
 const { scrambleWords } = require('./games/wordScrumblerGenerator');
@@ -63,6 +81,7 @@ const io = socketIo(server, {
     }
 });
 
+app.set('io', io);
 
 const ongoingMessageIds = new Map();
 const starting_prompt = "You are a helpful assistant";
@@ -522,8 +541,7 @@ app.get('/find_users_without_subscription', authenticateJWT, onlyOwner, async (r
 
 /********************* Image Generation ***********/
 app.post('/generate_image', authenticateJWT, onlySubscriber, async (req, res) => {
-    const { msg, agent_id, conversation_id, save_user_prompt, prompt_commands } = req.body;
-
+    const { msg, agent_id, conversation_id, save_user_prompt, prompt_commands, socket_id } = req.body;
     let conversation_name = "";
 
     const { data: conversation_data, error: conversation_error } = await getConversation(conversation_id);
@@ -580,13 +598,56 @@ app.post('/generate_image', authenticateJWT, onlySubscriber, async (req, res) =>
 
     } else if (agent.model == 'midjourney') {
         const translated_message = await translatePrompt(msg);
-        response = await generateImage(translated_message, prompt_commands);
+        const { data: user, error: user_error } = await getUserById(req.userId);
+        response = await generateImage(user.mj_auth_token, translated_message, prompt_commands, socket_id, conversation_id);
         return res.status(200).json({ response: response, conversation_name: conversation_name, messageId: messageId, image_ready: false });
     }
 });
 
 /********************* Midjourney Specific ***********/
-app.post('/check_image_status', authenticateJWT, async (req, res) => {
+app.post('/midjourney_callback', async (req, res) => {
+    const { result, data } = req.body;
+
+    console.log("Midjourney callback received:", data);
+
+    const io = req.app.get('io');  // Access the Socket.IO instance
+
+    if (data) {
+        console.log(data)
+        // Emit only to the specific client using the socketId
+        io.to(data.socket_id).emit('midjourneyCallback', { result: result.result, conversation_id: data.conversation_id });
+        console.log(`Emitted midjourneyCallback to socketId: ${data.socket_id}`);
+    } else {
+        console.error('No socketId found in the webhook callback');
+    }
+
+    // Respond to the webhook
+    res.status(200).json({ message: 'Webhook received and event emitted' });
+});
+
+app.post('/save_mj_image', authenticateJWT, async (req, res) => {
+    const { msg, messageId, flags, conversation_id, save_user_prompt, imageUrl, options } = req.body;
+    const { data: conversation_data, error: conversation_error } = await getConversation(conversation_id);
+
+    let context = conversation_data.context;
+
+    if (save_user_prompt)
+        context.push({ role: 'user', content: msg });
+
+    context.push({ role: 'system', content: imageUrl, buttons: options, messageId: messageId, flags: flags });
+    await updateConversation(conversation_id, conversation_data.name, context, req.userId);
+
+    return res.status(200).json({
+        response: {
+            messageId: messageId,
+            imageUrl: imageUrl,
+            conversation_name: conversation_data.name,
+            buttons: options
+        }
+    });
+});
+
+/*app.post('/check_image_status', authenticateJWT, async (req, res) => {
     const { msg, messageId, conversation_id, save_user_prompt } = req.body;
     const { data: conversation_data, error: conversation_error } = await getConversation(conversation_id);
     console.log("messageId", messageId)
@@ -613,9 +674,9 @@ app.post('/check_image_status', authenticateJWT, async (req, res) => {
             buttons: response.buttons
         }
     });
-})
+})*/
 
-app.post('/press_button', authenticateJWT, async (req, res) => {
+/*app.post('/press_button', authenticateJWT, async (req, res) => {
     const { conversation_id, messageId, midjourneyMessageId, button } = req.body;
     const { data: conversation_data, error: conversation_error } = await getConversation(conversation_id);
     const response = await pressButton(midjourneyMessageId, button);
@@ -624,6 +685,21 @@ app.post('/press_button', authenticateJWT, async (req, res) => {
         response: {
             messageId: response.messageId
         },
+        conversation_name: conversation_data.name,
+        image_ready: false
+    });
+})*/
+
+app.post('/send_action', authenticateJWT, async (req, res) => {
+    const { conversation_id, message_id, custom_id, prompt, prompt_commands, flags, socket_id } = req.body;
+    const { data: conversation_data, error: conversation_error } = await getConversation(conversation_id);
+
+    const { data: user, error: user_error } = await getUserById(req.userId);
+
+    const response = await sendAction(user.mj_auth_token, message_id, custom_id, prompt, prompt_commands, flags, socket_id, conversation_id);
+    console.log(response)
+
+    return res.status(200).json({
         conversation_name: conversation_data.name,
         image_ready: false
     });
@@ -689,14 +765,16 @@ app.post('/stripe/webhook', async (req, res) => {
     console.log("subscription_id", subscription_id);
     console.log("customer_id", customer_id);
     console.log("customer_email", customer_email);
+    console.log("EVENT TYPE", eventType);
 
     switch (eventType) {
         case 'checkout.session.completed':
-            if (data.object.metadata && data.object.metadata.credits) {
+            if (data && data.object.metadata && data.object.metadata.credits) {
                 console.log("buy credits");
                 const { data: user, error: user_error } = await getUserByEmail(customer_email);
                 if (!user_error) {
-                    await user_subscriptions.updateCredits(user.id, parseInt(data.object.metadata.credits));
+                    const { data: user_credits, error: user_error_credits } = await user_subscriptions.getSubscription(user.id);
+                    await user_subscriptions.updateCredits(user.id, user_credits.credits + parseInt(data.object.metadata.credits));
                     console.log(`Added ${data.object.metadata.credits} credits to user ${user.id}`);
                 } else {
                     console.error("User not found or error occurred:", user_error);
@@ -704,29 +782,34 @@ app.post('/stripe/webhook', async (req, res) => {
             }
             break
         case 'invoice.paid':
-
-            const { data: user, error: user_error } = await getUserByEmail(customer_email);
+            const { data: user_paid, error: user_error_paid } = await getUserByEmail(customer_email);
             const { data: current_subscription, error: current_subscription_error } = await subscriptions.getSubscriptionByPriceId(price_id);
-            const { data: current_user_subscription, error: current_user_subscription_error } = await user_subscriptions.getSubscription(user.id);
+            const { data: current_user_subscription, error: current_user_subscription_error } = await user_subscriptions.getSubscription(user_paid.id);
             if (current_user_subscription) {
-                await user_subscriptions.updateSubscription(user.id, customer_id, true, current_subscription.credits);
+                await user_subscriptions.updateSubscription(user_paid.id, customer_id, true, current_subscription.credits);
                 console.log("customer_id", customer_id);
                 console.log("current_user_subscription", current_user_subscription);
 
             } else {
-                const { data: subscription_result, error: subscription_error } = await user_subscriptions.createSubscription(subscription_id, customer_id, user.id, true, current_subscription.credits);
+                await user_subscriptions.createSubscription(subscription_id, customer_id, user_paid.id, true, current_subscription.credits);
             }
 
             console.log("Subscription paid");
-
-
             break;
-        case 'invoice.payment_failed' || 'customer.subscription.deleted':
-            const { data: current_subscription_stripe, error: current_subscription_stripe_error } = await user_subscriptions.getSubscriptionByStripeCustomerId(customer_id);
-            console.log("current_subscription_stripe", current_subscription_stripe)
-            console.log("current_subscription_stripe_error", current_subscription_stripe_error)
-            if (current_subscription_stripe)
-                await user_subscriptions.deleteSubscription(current_subscription_stripe.id);
+        /*case 'invoice.payment_failed':
+            const { data: failed_subscription, error: failed_subscription_error } = await user_subscriptions.getSubscriptionByStripeCustomerId(customer_id);
+            if (failed_subscription) {
+                console.log("Found subscription to delete");
+                await user_subscriptions.deleteSubscription(failed_subscription.id);
+            }
+            console.log("Subscription canceled");
+            break;*/
+        case 'customer.subscription.deleted':
+            const { data: deleted_subscription, error: deleted_subscription_error } = await user_subscriptions.getSubscriptionByStripeCustomerId(customer_id);
+            if (deleted_subscription) {
+                console.log("Found subscription to delete");
+                await user_subscriptions.deleteSubscription(deleted_subscription.id);
+            }
             console.log("Subscription canceled");
             break;
         default:
@@ -759,6 +842,19 @@ app.get('/get_stripe_portal', authenticateJWT, async (req, res) => {
 
     res.json({ response: url });
 });
+
+/*app.get('/get_cancelled_subscriptions', async (req, res) => {
+    const subscriptions = await stripe_manager.getAllCanceledSubscriptions();
+    for (let i = 0; i < subscriptions.length; i++) {
+        const subscription = subscriptions[i];
+        const { data: canceled_subscription, error: canceled_subscription_error } = await user_subscriptions.getSubscriptionByStripeCustomerId(subscription.customer);
+        if (canceled_subscription) {
+            console.log(canceled_subscription)
+            await user_subscriptions.deleteSubscription(canceled_subscription.id);
+        }
+    }
+    res.json({ response: subscriptions });
+});*/
 
 /********************* Agents ***********/
 app.post('/create_agent', authenticateJWT, onlyOwner, async (req, res) => {
@@ -1035,6 +1131,18 @@ app.post('/new_message', multer_upload.none(), async (req, res) => {
 })
 
 /* Utils */
+app.post('/add_mj_user', async (req, res) => {
+    const { user_id } = req.body;
+    // Get user
+    const { data: user, error: user_error } = await getUserById(user_id);
+    const mj_response = await signUpMjUser(user.email);
+    if (mj_response && mj_response.user) {
+        console.log(mj_response.user.api_key)
+        await updateUserMjAuthToken(user.id, mj_response.user.api_key);
+    }
+    return res.status(200).json({ response: mj_response });
+});
+
 function authenticateJWT(req, res, next) {
     const token = req.headers.authorization;
 

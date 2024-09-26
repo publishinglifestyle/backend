@@ -24,6 +24,7 @@ async function createSession(email, price_id) {
         mode: 'subscription',
         line_items: [
             {
+                //price: "price_1Pp8Fq2MV6hKm3ONPm3zl9uv",
                 price: price_id,
                 quantity: 1,
             },
@@ -31,7 +32,6 @@ async function createSession(email, price_id) {
         discounts: [
             {
                 coupon: 'uJ3EF19M',
-                //coupon: 'CJghsOBc'
             },
         ],
         customer_email: email,
@@ -86,9 +86,19 @@ async function buyCredits(package_number, email) {
     return session.url;
 }
 
+async function getAllCanceledSubscriptions() {
+    const canceledSubscriptions = await stripe.subscriptions.list({
+        status: 'canceled',
+        limit: 100, // You can adjust the limit as needed
+    });
+
+    return canceledSubscriptions.data;
+}
+
 module.exports = {
     createSession,
     createPortal,
     buyCredits,
-    credits
+    credits,
+    getAllCanceledSubscriptions
 }
