@@ -21,7 +21,9 @@ const {
     initiatePasswordReset,
     resetUserPassword,
     findUsersWithoutSubscription,
-    updateUserMjAuthToken
+    updateUserMjAuthToken,
+    updateUserPriceId,
+    getUsers
 } = require('./database/users');
 const { upload, download, downloadAndConvert, listImages, deleteImages } = require('./database/images');
 const { calculate_tokens } = require('./utils/tokenizer');
@@ -84,7 +86,7 @@ const io = socketIo(server, {
 app.set('io', io);
 
 const ongoingMessageIds = new Map();
-const starting_prompt = "You are a helpful assistant";
+const starting_prompt = "Act as a master linguist and creative writer AI persona. Your job is to flawlessly translate text with full understanding of context, ensuring no nuances are lost in translation. You are also responsible for writing engaging stories, clever riddles, captivating book titles, and vivid descriptions. Every response you provide is guaranteed to be extremely accurate, error-free, and aligned with the intended meaning, making you the ultimate resource for both linguistic and creative challenges.";
 const GAME_CREDITS = 1000;
 
 io.on('connection', (socket) => {
@@ -141,15 +143,15 @@ async function improvePrompt(user_message, example) {
     return response.choices[0].message.content;
 }
 
-async function translatePrompt(user_message) {
+async function translatePrompt(user_message, language) {
     const context = [
         {
             role: 'system',
-            content: "Act as a professional translator. Your job is to tranlsate the user message to English. Your response must only contain the translation without any further texts or comments."
+            content: "Act as a professional translator. Your job is to translate the user message to " + language + ". Your response must only contain the translation without any further texts or comments."
         },
         {
             role: 'user',
-            content: `User message to translate in English: "${user_message}".`
+            content: `User message to translate in ${language}: "${user_message}".`
         }
     ];
     const response = await openai.chat.completions.create({
@@ -157,11 +159,13 @@ async function translatePrompt(user_message) {
         model: 'gpt-4o'
     });
 
+    console.log("TRANSLATED MESSAGE: " + response.choices[0].message.content)
+
     return response.choices[0].message.content;
 }
 
-const handleStream = (response, user, user_id, subscription, socketId, messageId, conversation_id, conversation_name, context, user_tokens) => {
-    context.pop();
+const handleStream = (response, user, user_id, subscription, socketId, messageId, conversation_id, conversation_name, context, user_tokens, user_message) => {
+    //context.pop();
     return new Promise((resolve, reject) => {
         let fullMessage = '';
         let ai_tokens = 0;
@@ -203,6 +207,10 @@ const handleStream = (response, user, user_id, subscription, socketId, messageId
 
                     context.push({ role: 'system', content: fullMessage });
                     try {
+
+                        // Loop through context if find an opject where role is function, remove it
+                        context = context.filter(item => item.role !== 'function');
+                        console.log(context)
                         await updateConversation(conversation_id, conversation_name, context, user_id);
                     } catch (err) {
                         reject(err);
@@ -321,7 +329,7 @@ async function reply(user_id, msg, agent_id, conversation_id, socketId) {
                     type: "function",
                     function: {
                         name: "webSearch",
-                        description: "Search the web for information if the user asks specifically to browse the web",
+                        description: "Your job is to search the web and retrieve accurate, up-to-date information only when the user explicitly requests you to browse the web, search online, or access external sources. You will perform web searches solely under these conditions, ensuring relevant and precise results.",
                         parameters: {
                             type: "object",
                             properties: {
@@ -363,7 +371,7 @@ async function reply(user_id, msg, agent_id, conversation_id, socketId) {
 
         axios.post(url, data, { headers, responseType: 'stream' })
             .then(response => {
-                return handleStream(response, user, user_id, subscription, socketId, messageId, conversation_id, conversation_name, context, user_tokens);
+                return handleStream(response, user, user_id, subscription, socketId, messageId, conversation_id, conversation_name, context, user_tokens, msg);
             })
             .then(fullMessage => {
                 //console.log("Full message received:", fullMessage);
@@ -387,7 +395,13 @@ app.post('/sign_up', async (req, res) => {
         return res.status(400).json({ message: 'Passwords must be the same.' });
     }
 
-    await createUser(email, password, first_name, last_name);
+    const { data: user, error: user_error } = await createUser(email, password, first_name, last_name);
+
+    const mj_response = await signUpMjUser(email);
+    if (mj_response && mj_response.user) {
+        console.log(mj_response.user.api_key)
+        await updateUserMjAuthToken(user.id, mj_response.user.api_key);
+    }
 
     const { token, error, code, response } = await login(email, password);
     res.status(201).json({ message: 'User created successfully.', token: token });
@@ -567,7 +581,8 @@ app.post('/generate_image', authenticateJWT, onlySubscriber, async (req, res) =>
     }
 
     if (agent.model == 'dall-e') {
-        const new_prompt = await improvePrompt(msg, agent.prompt);
+        const translated_message = await translatePrompt(msg, 'English');
+        const new_prompt = await improvePrompt(translated_message, agent.prompt);
 
         const image_to_generate = new_prompt;
         console.log("image_to_generate", image_to_generate);
@@ -597,7 +612,7 @@ app.post('/generate_image', authenticateJWT, onlySubscriber, async (req, res) =>
         }
 
     } else if (agent.model == 'midjourney') {
-        const translated_message = await translatePrompt(msg);
+        const translated_message = await translatePrompt(msg, 'English');
         const { data: user, error: user_error } = await getUserById(req.userId);
         response = await generateImage(user.mj_auth_token, translated_message, prompt_commands, socket_id, conversation_id);
         return res.status(200).json({ response: response, conversation_name: conversation_name, messageId: messageId, image_ready: false });
@@ -631,8 +646,11 @@ app.post('/save_mj_image', authenticateJWT, async (req, res) => {
 
     let context = conversation_data.context;
 
-    if (save_user_prompt)
-        context.push({ role: 'user', content: msg });
+    if (save_user_prompt) {
+        const translated_message = await translatePrompt(msg, 'Italian');
+        const cleaned_message = translated_message.replace(/"/g, '');
+        context.push({ role: 'user', content: cleaned_message });
+    }
 
     context.push({ role: 'system', content: imageUrl, buttons: options, messageId: messageId, flags: flags });
     await updateConversation(conversation_id, conversation_data.name, context, req.userId);
@@ -796,14 +814,14 @@ app.post('/stripe/webhook', async (req, res) => {
 
             console.log("Subscription paid");
             break;
-        /*case 'invoice.payment_failed':
-            const { data: failed_subscription, error: failed_subscription_error } = await user_subscriptions.getSubscriptionByStripeCustomerId(customer_id);
-            if (failed_subscription) {
-                console.log("Found subscription to delete");
-                await user_subscriptions.deleteSubscription(failed_subscription.id);
+        case 'customer.subscription.updated':
+            const { data: updated_subscription, error: updated_subscription_error } = await user_subscriptions.getSubscriptionByStripeCustomerId(customer_id);
+            if (updated_subscription) {
+                console.log("Found subscription to update");
+                await updateUserPriceId(updated_subscription.user_id, data.object.plan.id);
             }
             console.log("Subscription canceled");
-            break;*/
+            break;
         case 'customer.subscription.deleted':
             const { data: deleted_subscription, error: deleted_subscription_error } = await user_subscriptions.getSubscriptionByStripeCustomerId(customer_id);
             if (deleted_subscription) {
@@ -1176,16 +1194,16 @@ app.post('/sign_up_google', async (req, res) => {
 });
 
 /* Utils */
-app.post('/add_mj_user', async (req, res) => {
-    const { user_id } = req.body;
-    // Get user
-    const { data: user, error: user_error } = await getUserById(user_id);
-    const mj_response = await signUpMjUser(user.email);
-    if (mj_response && mj_response.user) {
-        console.log(mj_response.user.api_key)
-        await updateUserMjAuthToken(user.id, mj_response.user.api_key);
+app.get('/add_mj_user', async (req, res) => {
+    const { data: users, error: users_error } = await getUsers();
+    for (let user of users) {
+        const mj_response = await signUpMjUser(user.email);
+        if (mj_response && mj_response.user) {
+            console.log(mj_response.user.api_key)
+            await updateUserMjAuthToken(user.id, mj_response.user.api_key);
+        }
     }
-    return res.status(200).json({ response: mj_response });
+    return res.status(200).json({ response: "All users added" });
 });
 
 function authenticateJWT(req, res, next) {

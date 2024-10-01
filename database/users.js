@@ -251,6 +251,35 @@ async function updateUserMjAuthToken(user_id, mj_auth_token) {
     return { data, error };
 }
 
+async function updateUserPriceId(user_id, price_id) {
+    const { data, error } = await supabase
+        .from('Users')
+        .update({ price_id })
+        .select()
+        .match({ id: user_id });
+
+    return { data, error };
+}
+
+async function getUsers() {
+    const { data, error } = await supabase
+        .from('Users')
+        .select();
+
+    // Handle errors from the Supabase query
+    if (error) {
+        console.error('Error fetching user:', error);
+        return { error };
+    }
+
+    // Handle case where no user is found
+    if (!data) {
+        return { code: 404, response: 'Users not found.' };
+    }
+
+    return { data, error };
+}
+
 module.exports = {
     createUser,
     login,
@@ -261,5 +290,7 @@ module.exports = {
     initiatePasswordReset,
     resetUserPassword,
     findUsersWithoutSubscription,
-    updateUserMjAuthToken
+    updateUserMjAuthToken,
+    updateUserPriceId,
+    getUsers
 };
