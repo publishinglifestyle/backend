@@ -40,7 +40,7 @@ async function getConversationsByUserId(user_id) {
             .from('Conversations')
             .select()
             .match({ user_id: user_id })
-            .order('created_at', { ascending: true })
+            .order('created_at', { ascending: false })
 
         if (error) {
             throw error;

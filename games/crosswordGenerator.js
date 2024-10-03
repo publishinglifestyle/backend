@@ -14,6 +14,21 @@ function generateCluesAndAnswers(words, clues) {
     }));
 }
 
+function shuffleWordsAndClues(words, clues) {
+    const combined = words.map((word, index) => ({ word, clue: clues[index] }));
+
+    for (let i = combined.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [combined[i], combined[j]] = [combined[j], combined[i]]; // Swap elements
+    }
+
+    // Separate the words and clues back into their respective arrays
+    return {
+        words: combined.map(item => item.word),
+        clues: combined.map(item => item.clue)
+    };
+}
+
 async function generateCrossword(words, clues, words_per_puzzle, num_puzzles) {
     const totalWordsNeeded = words_per_puzzle * num_puzzles;
 
@@ -23,6 +38,11 @@ async function generateCrossword(words, clues, words_per_puzzle, num_puzzles) {
             error: `The total number of words (${words.length}) and clues (${clues.length}) must match the total number needed for ${num_puzzles} puzzles (${totalWordsNeeded}).`
         };
     }
+
+    // Shuffle the words and clues together
+    const shuffled = shuffleWordsAndClues(words, clues);
+    words = shuffled.words;
+    clues = shuffled.clues;
 
     const crosswords = [];
 

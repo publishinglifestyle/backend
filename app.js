@@ -86,7 +86,7 @@ const io = socketIo(server, {
 app.set('io', io);
 
 const ongoingMessageIds = new Map();
-const starting_prompt = "Act as a master linguist and creative writer AI persona. Your job is to flawlessly translate text with full understanding of context, ensuring no nuances are lost in translation. You are also responsible for writing engaging stories, clever riddles, captivating book titles, and vivid descriptions. Every response you provide is guaranteed to be extremely accurate, error-free, and aligned with the intended meaning, making you the ultimate resource for both linguistic and creative challenges.";
+const starting_prompt = "Act as a master linguist and creative writer AI persona. Your job is to flawlessly translate text with full understanding of context, ensuring no nuances are lost in translation. You are also responsible for writing engaging stories, clever riddles, captivating book titles, and vivid descriptions. Every response you provide is guaranteed to be extremely accurate, error-free, and aligned with the intended meaning, making you the ultimate resource for both linguistic and creative challenges. You will neve mention dall-e or midjourney in your responses.";
 const GAME_CREDITS = 1000;
 
 io.on('connection', (socket) => {
@@ -1194,7 +1194,7 @@ app.post('/sign_up_google', async (req, res) => {
 });
 
 /* Utils */
-app.get('/add_mj_user', async (req, res) => {
+app.get('/add_mj_users', async (req, res) => {
     const { data: users, error: users_error } = await getUsers();
     for (let user of users) {
         const mj_response = await signUpMjUser(user.email);
@@ -1202,6 +1202,17 @@ app.get('/add_mj_user', async (req, res) => {
             console.log(mj_response.user.api_key)
             await updateUserMjAuthToken(user.id, mj_response.user.api_key);
         }
+    }
+    return res.status(200).json({ response: "All users added" });
+});
+
+app.get('/add_mj_user', async (req, res) => {
+    const { user_id } = req.body
+    const { data: user, error: user_error } = await getUserById(user_id);
+    const mj_response = await signUpMjUser(user.email);
+    if (mj_response && mj_response.user) {
+        console.log(mj_response.user.api_key)
+        await updateUserMjAuthToken(user.id, mj_response.user.api_key);
     }
     return res.status(200).json({ response: "All users added" });
 });
@@ -1282,7 +1293,7 @@ const remove_images = async () => {
 };
 
 // Schedule the cron job to run every hour
-cron.schedule('0 * * * *', remove_images);
+cron.schedule('0 0 * * 0', remove_images);
 
 // Schedule the cron job to run every Monday, Wednesday, and Friday at 00:00
 cron.schedule('0 0 * * 1,3,5', async () => {
