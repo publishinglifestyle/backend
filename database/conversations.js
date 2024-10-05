@@ -15,11 +15,11 @@ async function createConversation(name, context, user_id) {
     return { data, error }
 }
 
-async function updateConversation(conversation_id, name, context, user_id) {
+async function updateConversation(conversation_id, name, context, user_id, agent_id) {
     try {
         const { data, error: updateError } = await supabase
             .from('Conversations')
-            .update({ name, context, user_id })
+            .update({ name, context, user_id, agent_id })
             .select()
             .match({ id: conversation_id })
 

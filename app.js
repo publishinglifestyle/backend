@@ -8,6 +8,8 @@ const axios = require('axios');
 const cron = require('node-cron');
 const cors = require('cors');
 const multer = require('multer');
+const LanguageDetect = require('languagedetect');
+const lngDetector = new LanguageDetect();
 const OpenAI = require('openai');
 const openai = new OpenAI({ apiKey: process.env.OPEN_AI_KEY });
 
@@ -43,7 +45,6 @@ const { sendResetPasswordEmail, sendActivateSubscriptionEmail } = require('./uti
 const { generateImage, sendAction, signUpMjUser } = require('./utils/midjourney');
 const { generateSudoku } = require('./games/sudokuGenerator');
 const { generateCrossword } = require('./games/crosswordGenerator');
-//const { generateNurikabe } = require('./games/nurikabeGenerator');
 const { generateWordSearch } = require('./games/wordsearchGenerator');
 const { generateHangman } = require('./games/hangmanGenerator');
 const { scrambleWords } = require('./games/wordScrumblerGenerator');
@@ -51,7 +52,7 @@ const { generateCryptogram } = require('./games/cryptogramGenerator');
 const { generateMinefield } = require('./games/mineFinderGenerator');
 const { webSearch } = require('./utils/serp');
 const { createThread, createMessage, checkStatus, retrieveMessage } = require('./dialog')
-
+const { generateIdeogramImage, remixIdeogramImage, upscaleIdeogramImage, describeIdeogramImage } = require('./utils/ideogram')
 
 const app = express();
 const compression = require('compression');
@@ -144,6 +145,11 @@ async function improvePrompt(user_message, example) {
 }
 
 async function translatePrompt(user_message, language) {
+    const language_detected = lngDetector.detect(user_message)
+    if (user_message && language_detected && language_detected.length > 0 && language_detected[0][0] === language.toLowerCase()) {
+        return user_message;
+    }
+
     const context = [
         {
             role: 'system',
@@ -164,7 +170,7 @@ async function translatePrompt(user_message, language) {
     return response.choices[0].message.content;
 }
 
-const handleStream = (response, user, user_id, subscription, socketId, messageId, conversation_id, conversation_name, context, user_tokens, user_message) => {
+const handleStream = (response, user, user_id, subscription, socketId, messageId, conversation_id, conversation_name, context, user_tokens, agent_id) => {
     //context.pop();
     return new Promise((resolve, reject) => {
         let fullMessage = '';
@@ -211,7 +217,7 @@ const handleStream = (response, user, user_id, subscription, socketId, messageId
                         // Loop through context if find an opject where role is function, remove it
                         context = context.filter(item => item.role !== 'function');
                         console.log(context)
-                        await updateConversation(conversation_id, conversation_name, context, user_id);
+                        await updateConversation(conversation_id, conversation_name, context, user_id, agent_id);
                     } catch (err) {
                         reject(err);
                         return;
@@ -371,7 +377,7 @@ async function reply(user_id, msg, agent_id, conversation_id, socketId) {
 
         axios.post(url, data, { headers, responseType: 'stream' })
             .then(response => {
-                return handleStream(response, user, user_id, subscription, socketId, messageId, conversation_id, conversation_name, context, user_tokens, msg);
+                return handleStream(response, user, user_id, subscription, socketId, messageId, conversation_id, conversation_name, context, user_tokens, agent_id);
             })
             .then(fullMessage => {
                 //console.log("Full message received:", fullMessage);
@@ -603,7 +609,7 @@ app.post('/generate_image', authenticateJWT, onlySubscriber, async (req, res) =>
                 context.push({ role: 'user', content: msg });
 
             context.push({ role: 'system', content: imageUrl });
-            await updateConversation(conversation_id, conversation_name, context, req.userId);
+            await updateConversation(conversation_id, conversation_name, context, req.userId, agent_id);
 
             return res.status(200).json({ response: imageUrl, conversation_name: conversation_name, messageId: messageId, image_ready: true });
         } catch (error) {
@@ -616,8 +622,111 @@ app.post('/generate_image', authenticateJWT, onlySubscriber, async (req, res) =>
         const { data: user, error: user_error } = await getUserById(req.userId);
         response = await generateImage(user.mj_auth_token, translated_message, prompt_commands, socket_id, conversation_id);
         return res.status(200).json({ response: response, conversation_name: conversation_name, messageId: messageId, image_ready: false });
+
+    } else if (agent.model == 'ideogram') {
+        const translated_message = await translatePrompt(msg, 'English');
+        imageUrl = await generateIdeogramImage(translated_message, prompt_commands);
+        imageUrl = await downloadAndConvert(imageUrl)
+        if (save_user_prompt)
+            context.push({ role: 'user', content: msg });
+
+        context.push({ role: 'system', content: imageUrl, ideogram_buttons: ['Remix', 'Describe'], prompt: msg });
+        await updateConversation(conversation_id, conversation_name, context, req.userId, agent_id);
+        return res.status(200).json({ response: imageUrl, conversation_name: conversation_name, messageId: messageId, image_ready: true, ideogram_buttons: ['Remix', 'Describe'], prompt: msg });
     }
 });
+
+/********************* Ideogram Specific ***********/
+app.post('/remix_ideogram', authenticateJWT, async (req, res) => {
+    const { conversation_id, msg, image_url, prompt_commands, agent_id } = req.body;
+    console.log("Remixing ideogram with message:", image_url)
+
+    const messageId = `msg-${Date.now()}`
+    const { data: conversation_data, error: conversation_error } = await getConversation(conversation_id);
+    let context = conversation_data.context;
+    context.push({ role: 'user', content: msg });
+
+    const translated_message = await translatePrompt(msg, 'English');
+    let imageUrl = await remixIdeogramImage(translated_message, prompt_commands, image_url);
+    imageUrl = await downloadAndConvert(imageUrl)
+
+    context.push({ role: 'system', content: imageUrl, ideogram_buttons: ['Remix', 'Describe'], prompt: msg });
+    await updateConversation(conversation_id, conversation_data.name, context, req.userId, agent_id);
+
+    return res.status(200).json({
+        response: imageUrl,
+        conversation_name: conversation_data.name,
+        messageId: messageId,
+        image_ready: true,
+        ideogram_buttons: ['Remix', 'Describe'],
+        prompt: msg
+    });
+});
+
+app.post('/describe_ideogram', authenticateJWT, async (req, res) => {
+    const { conversation_id, image_url, agent_id } = req.body;
+
+    const messageId = `msg-${Date.now()}`
+    const { data: conversation_data, error: conversation_error } = await getConversation(conversation_id);
+    let context = conversation_data.context;
+    context.push({ role: 'user', content: image_url });
+
+    const description = await describeIdeogramImage(image_url);
+
+    context.push({ role: 'system', content: description.descriptions[0].text, ideogram_buttons: ['Remix', 'Describe'], prompt: image_url });
+    await updateConversation(conversation_id, conversation_data.name, context, req.userId, agent_id);
+
+    return res.status(200).json({
+        response: description.descriptions[0].text,
+        conversation_name: conversation_data.name,
+        messageId: messageId,
+        image_ready: true,
+        ideogram_buttons: ['Remix', 'Describe'],
+        prompt: image_url
+    });
+});
+
+/*app.post('/upscale_ideogram', authenticateJWT, async (req, res) => {
+    const { conversation_id, image_url, prompt } = req.body;
+    console.log(conversation_id, image_url, prompt);
+    const messageId = `msg-${Date.now()}`;
+
+    // Retrieve conversation context
+    const { data: conversation_data, error: conversation_error } = await getConversation(conversation_id);
+    if (conversation_error) {
+        return res.status(500).json({ error: "Failed to retrieve conversation" });
+    }
+
+    let context = conversation_data.context;
+    context.push({ role: 'user', content: prompt });
+
+    // Call upscale function
+    try {
+        let imageUrl = await upscaleIdeogramImage(image_url);
+        imageUrl = await downloadAndConvert(imageUrl);
+
+        // Add the system's response (upscaled image URL) to the conversation context
+        context.push({ role: 'system', content: imageUrl, ideogram_buttons: ['Remix', 'Upscale', 'Describe'], prompt: prompt });
+
+        // Update the conversation with new context
+        await updateConversation(conversation_id, conversation_data.name, context, req.userId);
+
+        // Return the response
+        return res.status(200).json({
+            response: imageUrl,
+            conversation_name: conversation_data.name,
+            messageId: messageId,
+            image_ready: true,
+            ideogram_buttons: ['Remix', 'Upscale', 'Describe'],
+            prompt: prompt
+        });
+
+    } catch (error) {
+        console.error("Error during image upscale: ", error);
+        return res.status(500).json({ error: "Failed to upscale image" });
+    }
+});*/
+
 
 /********************* Midjourney Specific ***********/
 app.post('/midjourney_callback', async (req, res) => {
@@ -641,7 +750,7 @@ app.post('/midjourney_callback', async (req, res) => {
 });
 
 app.post('/save_mj_image', authenticateJWT, async (req, res) => {
-    const { msg, messageId, flags, conversation_id, save_user_prompt, imageUrl, options } = req.body;
+    const { msg, messageId, flags, conversation_id, save_user_prompt, imageUrl, options, agent_id } = req.body;
     const { data: conversation_data, error: conversation_error } = await getConversation(conversation_id);
 
     let context = conversation_data.context;
@@ -653,7 +762,7 @@ app.post('/save_mj_image', authenticateJWT, async (req, res) => {
     }
 
     context.push({ role: 'system', content: imageUrl, buttons: options, messageId: messageId, flags: flags });
-    await updateConversation(conversation_id, conversation_data.name, context, req.userId);
+    await updateConversation(conversation_id, conversation_data.name, context, req.userId, agent_id);
 
     return res.status(200).json({
         response: {
@@ -664,49 +773,6 @@ app.post('/save_mj_image', authenticateJWT, async (req, res) => {
         }
     });
 });
-
-/*app.post('/check_image_status', authenticateJWT, async (req, res) => {
-    const { msg, messageId, conversation_id, save_user_prompt } = req.body;
-    const { data: conversation_data, error: conversation_error } = await getConversation(conversation_id);
-    console.log("messageId", messageId)
-    const response = await checkImageStatus(messageId);
-    let imageUrl
-
-    console.log("response", response)
-
-    if (response.status == 'DONE') {
-        let context = conversation_data.context;
-        imageUrl = response.uri;
-
-        if (save_user_prompt)
-            context.push({ role: 'user', content: msg });
-        context.push({ role: 'system', content: imageUrl, buttons: response.buttons, messageId: messageId });
-        await updateConversation(conversation_id, conversation_data.name, context, req.userId);
-    }
-    return res.status(200).json({
-        response: {
-            messageId: messageId,
-            status: response.status,
-            imageUrl: imageUrl,
-            conversation_name: conversation_data.name,
-            buttons: response.buttons
-        }
-    });
-})*/
-
-/*app.post('/press_button', authenticateJWT, async (req, res) => {
-    const { conversation_id, messageId, midjourneyMessageId, button } = req.body;
-    const { data: conversation_data, error: conversation_error } = await getConversation(conversation_id);
-    const response = await pressButton(midjourneyMessageId, button);
-    console.log(response)
-    return res.status(200).json({
-        response: {
-            messageId: response.messageId
-        },
-        conversation_name: conversation_data.name,
-        image_ready: false
-    });
-})*/
 
 app.post('/send_action', authenticateJWT, async (req, res) => {
     const { conversation_id, message_id, custom_id, prompt, prompt_commands, flags, socket_id } = req.body;
@@ -861,19 +927,6 @@ app.get('/get_stripe_portal', authenticateJWT, async (req, res) => {
     res.json({ response: url });
 });
 
-/*app.get('/get_cancelled_subscriptions', async (req, res) => {
-    const subscriptions = await stripe_manager.getAllCanceledSubscriptions();
-    for (let i = 0; i < subscriptions.length; i++) {
-        const subscription = subscriptions[i];
-        const { data: canceled_subscription, error: canceled_subscription_error } = await user_subscriptions.getSubscriptionByStripeCustomerId(subscription.customer);
-        if (canceled_subscription) {
-            console.log(canceled_subscription)
-            await user_subscriptions.deleteSubscription(canceled_subscription.id);
-        }
-    }
-    res.json({ response: subscriptions });
-});*/
-
 /********************* Agents ***********/
 app.post('/create_agent', authenticateJWT, onlyOwner, async (req, res) => {
     const { name, temperature, type, level, prompt, model, n_buttons, buttons } = req.body;
@@ -972,14 +1025,14 @@ app.post('/delete_conversation', authenticateJWT, async (req, res) => {
 });
 
 app.post('/change_conversation_name', authenticateJWT, async (req, res) => {
-    const { conversation_id, name } = req.body;
+    const { conversation_id, name, agent_id } = req.body;
 
     if (!conversation_id || !name) {
         return res.status(400).json({ response: 'Params missing.' });
     }
 
     const { data: conversation, error: conversation_error } = await getConversation(conversation_id);
-    const { data, error } = await updateConversation(conversation_id, name, conversation.content, req.userId);
+    const { data, error } = await updateConversation(conversation_id, name, conversation.content, req.userId, agent_id);
     return res.status(200).json({ response: data });
 })
 
@@ -1020,14 +1073,6 @@ app.post('/generate_crossword', authenticateJWT, onlySubscriber, async (req, res
         return res.status(500).json({ error: "An unexpected error occurred." });
     }
 });
-
-
-/*app.post('/generate_nurikabe', authenticateJWT, onlySubscriber, async (req, res) => {
-    const { size = 5 } = req.body;
-
-    const puzzle = await generateNurikabe(size);
-    return res.status(200).json({ response: puzzle });
-});*/
 
 app.post('/generate_wordsearch', authenticateJWT, onlySubscriber, async (req, res) => {
     const { words, num_puzzles, backwards_probability } = req.body;
