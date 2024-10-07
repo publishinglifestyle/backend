@@ -144,6 +144,31 @@ async function improvePrompt(user_message, example) {
     return response.choices[0].message.content;
 }
 
+async function replacePrompt(userMessage, basePrompt) {
+    const context = [
+        {
+            role: 'system',
+            content: `You will receive a base prompt and a word/phrase to substitute. Replace the specified word/phrase inside the base prompt with the given input. Only return the modified prompt with no additional text or comments.`
+        },
+        {
+            role: 'user',
+            content: `Base prompt: "${basePrompt}"\nReplace word/phrase: "${userMessage}".`
+        }
+    ];
+
+    try {
+        const response = await openai.chat.completions.create({
+            model: 'gpt-4',
+            messages: context
+        });
+
+        return response.choices[0].message.content.trim();
+    } catch (error) {
+        console.error("Error in replacePrompt function:", error);
+        throw new Error("Failed to generate a response. Please try again later.");
+    }
+}
+
 async function translatePrompt(user_message, language) {
     const language_detected = lngDetector.detect(user_message)
     if (user_message && language_detected && language_detected.length > 0 && language_detected[0][0] === language.toLowerCase()) {
@@ -625,6 +650,8 @@ app.post('/generate_image', authenticateJWT, onlySubscriber, async (req, res) =>
 
     } else if (agent.model == 'ideogram') {
         const translated_message = await translatePrompt(msg, 'English');
+        //const new_prompt = await replacePrompt(translated_message, agent.prompt);
+        //console.log("new_prompt", new_prompt);
         imageUrl = await generateIdeogramImage(translated_message, prompt_commands);
         imageUrl = await downloadAndConvert(imageUrl)
         if (save_user_prompt)
@@ -929,24 +956,24 @@ app.get('/get_stripe_portal', authenticateJWT, async (req, res) => {
 
 /********************* Agents ***********/
 app.post('/create_agent', authenticateJWT, onlyOwner, async (req, res) => {
-    const { name, temperature, type, level, prompt, model, n_buttons, buttons } = req.body;
+    const { name, temperature, type, level, prompt, model, n_buttons, buttons, language } = req.body;
 
-    if (!name || !type || !level || !prompt || !buttons) {
+    if (!name || !type || !level || !prompt || !buttons || !language) {
         return res.status(400).json({ response: 'Params missing.' });
     }
 
-    const { data, error } = await createAgent(name, temperature, type, level, prompt, model, n_buttons, buttons);
+    const { data, error } = await createAgent(name, temperature, type, level, prompt, model, n_buttons, buttons, language);
     return res.status(200).json({ response: data });
 });
 
 app.post('/update_agent', authenticateJWT, onlyOwner, async (req, res) => {
-    const { agent_id, name, temperature, type, level, prompt, model, n_buttons, buttons } = req.body;
+    const { agent_id, name, temperature, type, level, prompt, model, n_buttons, buttons, language } = req.body;
 
-    if (!agent_id || !name || !type || !level || !prompt || !buttons) {
+    if (!agent_id || !name || !type || !level || !prompt || !buttons || !language) {
         return res.status(400).json({ response: 'Params missing.' });
     }
 
-    const { data, error } = await updateAgent(agent_id, name, temperature, type, level, prompt, model, n_buttons, buttons);
+    const { data, error } = await updateAgent(agent_id, name, temperature, type, level, prompt, model, n_buttons, buttons, language);
     return res.status(200).json({ response: data });
 });
 
@@ -965,7 +992,7 @@ app.get('/get_agents_per_level', authenticateJWT, async (req, res) => {
     const { data: user, error: user_error } = await getUserById(req.userId);
 
     const level = user.role == 'owner' ? 3 : user.subscription_level;
-    const { data, error } = await getAgentsPerLevel(level);
+    const { data, error } = await getAgentsPerLevel(level, req.query.language);
     return res.status(200).json({ response: data });
 });
 
