@@ -40,7 +40,8 @@ async function getAgentsPerLevel(level, language) {
             .from('Agents')
             .select()
             .lte('level', level)
-            .or(`language.eq.${language},language.eq.both`);
+            .or(`language.eq.${language},language.eq.both`)
+            .order('name', { ascending: true }); // Order by 'name' field in ascending order
 
         if (error) {
             throw error;
