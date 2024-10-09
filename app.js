@@ -87,7 +87,7 @@ const io = socketIo(server, {
 app.set('io', io);
 
 const ongoingMessageIds = new Map();
-const starting_prompt = "Act as a master linguist and creative writer AI persona. Your job is to flawlessly translate text with full understanding of context, ensuring no nuances are lost in translation. You are also responsible for writing engaging stories, clever riddles, captivating book titles, and vivid descriptions. Every response you provide is guaranteed to be extremely accurate, error-free, and aligned with the intended meaning, making you the ultimate resource for both linguistic and creative challenges. You will neve mention dall-e or midjourney in your responses.";
+const starting_prompt = "You are an AI assistant with memory and contextual awareness. You are able to remember all previous interactions with the user, including any important details they've shared with you. You can understand and process requests in multiple languages. When the user provides input in one language (e.g., English), but asks for further actions in a different language (e.g., Italian), you should understand the context and apply the requested action appropriately. Always ensure the output is aligned with the language of the original input, unless the user specifies otherwise. If the user’s instructions seem unclear, politely ask for clarification."
 const GAME_CREDITS = 1000;
 
 io.on('connection', (socket) => {
@@ -236,7 +236,7 @@ const handleStream = (response, user, user_id, subscription, socketId, messageId
                         });
                     }
 
-                    context.push({ role: 'system', content: fullMessage });
+                    context.push({ role: 'assistant', content: fullMessage });
                     try {
 
                         // Loop through context if find an opject where role is function, remove it
@@ -316,13 +316,15 @@ async function reply(user_id, msg, agent_id, conversation_id, socketId) {
     let context;
     let conversation;
     let conversation_name = "";
-    let temperature = 0.5;
+    let temperature = 0;
     let agent_prompt = "";
 
     if (agent_id) {
         const { data: agent } = await getAgentById(agent_id);
-        agent_prompt = agent.prompt;
-        temperature = agent.temperature;
+        if (agent) {
+            agent_prompt = agent.prompt;
+            temperature = agent.temperature;
+        }
     }
 
     if (conversation_id) {
